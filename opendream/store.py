@@ -141,6 +141,13 @@ def _parse_iso(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s) if s else None
 
 
+def _require_iso(s: str | None) -> datetime:
+    """Parse an ISO timestamp from a NOT NULL column. Raises if the row is corrupt."""
+    if s is None:
+        raise ValueError("expected non-null timestamp column")
+    return datetime.fromisoformat(s)
+
+
 def save_session(session: Session, path: Path | str | None = None) -> None:
     """Insert (or replace) a session and all its messages."""
     conn = _connect(_resolve(path))
@@ -229,7 +236,7 @@ def _row_to_session(row: sqlite3.Row, msg_rows: list[sqlite3.Row]) -> Session:
         id=UUID(row["id"]),
         agent=row["agent"],
         project_id=row["project_id"],
-        started_at=_parse_iso(row["started_at"]),
+        started_at=_require_iso(row["started_at"]),
         ended_at=_parse_iso(row["ended_at"]),
         task_description=row["task_description"],
         outcome_known=bool(row["outcome_known"]),
@@ -250,36 +257,151 @@ def _row_to_session(row: sqlite3.Row, msg_rows: list[sqlite3.Row]) -> Session:
     )
 
 
-# ---------- Stubs to be implemented later ----------
+# ---------- Reflections ----------
 
 def save_reflection(reflection: Reflection, path: Path | str | None = None) -> None:
-    raise NotImplementedError("save_reflection not implemented yet")
+    """Insert (or replace) a reflection. Whole payload stored as JSON."""
+    payload = reflection.model_dump_json()
+    conn = _connect(_resolve(path))
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO reflections (id, session_id, created_at, payload)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    str(reflection.id),
+                    str(reflection.session_id),
+                    _iso(reflection.created_at),
+                    payload,
+                ),
+            )
+    finally:
+        conn.close()
 
 
 def load_reflection(
     reflection_id: UUID | str, path: Path | str | None = None
 ) -> Reflection | None:
-    raise NotImplementedError("load_reflection not implemented yet")
+    conn = _connect(_resolve(path))
+    try:
+        row = conn.execute(
+            "SELECT payload FROM reflections WHERE id = ?", (str(reflection_id),)
+        ).fetchone()
+    finally:
+        conn.close()
+    return Reflection.model_validate_json(row["payload"]) if row else None
 
 
 def list_reflections(path: Path | str | None = None) -> list[Reflection]:
-    raise NotImplementedError("list_reflections not implemented yet")
+    """Return all reflections, oldest first."""
+    conn = _connect(_resolve(path))
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM reflections ORDER BY created_at ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [Reflection.model_validate_json(r["payload"]) for r in rows]
 
+
+# ---------- Memory entries ----------
 
 def save_memory_entry(entry: MemoryEntry, path: Path | str | None = None) -> None:
-    raise NotImplementedError("save_memory_entry not implemented yet")
+    """Insert (or replace) a memory entry."""
+    conn = _connect(_resolve(path))
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_entries
+                  (id, kind, content, scope, confidence, created_at, last_reinforced_at,
+                   deprecated_at, deprecation_reason, evidence_reflection_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(entry.id),
+                    entry.kind,
+                    entry.content,
+                    entry.scope,
+                    entry.confidence,
+                    _iso(entry.created_at),
+                    _iso(entry.last_reinforced_at),
+                    _iso(entry.deprecated_at),
+                    entry.deprecation_reason,
+                    json.dumps([str(u) for u in entry.evidence_reflection_ids]),
+                ),
+            )
+    finally:
+        conn.close()
 
 
 def list_memory_entries(
     include_deprecated: bool = False,
     path: Path | str | None = None,
 ) -> list[MemoryEntry]:
-    raise NotImplementedError("list_memory_entries not implemented yet")
+    """Return memory entries. Active-only by default, ordered by created_at."""
+    sql = "SELECT * FROM memory_entries"
+    if not include_deprecated:
+        sql += " WHERE deprecated_at IS NULL"
+    sql += " ORDER BY created_at ASC"
+    conn = _connect(_resolve(path))
+    try:
+        rows = conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_memory_entry(r) for r in rows]
 
+
+def _row_to_memory_entry(row: sqlite3.Row) -> MemoryEntry:
+    return MemoryEntry(
+        id=UUID(row["id"]),
+        kind=row["kind"],
+        content=row["content"],
+        scope=row["scope"],
+        confidence=row["confidence"],
+        created_at=_require_iso(row["created_at"]),
+        last_reinforced_at=_require_iso(row["last_reinforced_at"]),
+        deprecated_at=_parse_iso(row["deprecated_at"]),
+        deprecation_reason=row["deprecation_reason"],
+        evidence_reflection_ids=[UUID(u) for u in json.loads(row["evidence_reflection_ids"])],
+    )
+
+
+# ---------- Dream cycles ----------
 
 def save_dream_cycle(cycle: DreamCycle, path: Path | str | None = None) -> None:
-    raise NotImplementedError("save_dream_cycle not implemented yet")
+    """Insert (or replace) a dream cycle. Whole payload stored as JSON."""
+    payload = cycle.model_dump_json()
+    conn = _connect(_resolve(path))
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO dream_cycles
+                  (id, created_at, applied, applied_at, payload)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    str(cycle.id),
+                    _iso(cycle.created_at),
+                    int(cycle.applied),
+                    _iso(cycle.applied_at),
+                    payload,
+                ),
+            )
+    finally:
+        conn.close()
 
 
 def list_dream_cycles(path: Path | str | None = None) -> list[DreamCycle]:
-    raise NotImplementedError("list_dream_cycles not implemented yet")
+    """Return all dream cycles, oldest first."""
+    conn = _connect(_resolve(path))
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM dream_cycles ORDER BY created_at ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [DreamCycle.model_validate_json(r["payload"]) for r in rows]
