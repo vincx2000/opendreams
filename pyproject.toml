@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Vincent Gomes" }]
-keywords = ["ai", "agents", "memory", "llm", "aider", "openhands"]
+keywords = [
+    "ai", "agents", "memory", "llm", "claude-code", "aider",
+    "openhands", "agents-md", "agent-memory", "prompt-engineering",
+    "anthropic", "claude",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -18,6 +22,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2.6",
     "openai>=1.30",
+    "anthropic>=0.40",
     "sqlite-vec>=0.1.0",
     "typer>=0.12",
     "rich>=13.7",
@@ -35,8 +40,9 @@ dev = [
 opendream = "opendream.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/YOURNAME/opendream"
-Issues = "https://github.com/YOURNAME/opendream/issues"
+Homepage = "https://github.com/vincx2000/opendreams"
+Issues = "https://github.com/vincx2000/opendreams/issues"
+Source = "https://github.com/vincx2000/opendreams"
 
 [build-system]
 requires = ["hatchling"]
@@ -48,3 +54,11 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+ignore_missing_imports = true   # sqlite-vec ships no py.typed marker
+exclude = [
+    "eval/tasks/",       # per-task test fixtures (duplicate test_* module names)
+    "eval/fixtures/",    # the codebase-under-test for the eval suite
+]

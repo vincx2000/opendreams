@@ -24,11 +24,13 @@ class StubLLM:
 
 
 def _reflection() -> Reflection:
+    tc = TaskClassification(type="bug_fix", domain="python", complexity="simple")
     return Reflection(
         session_id=uuid4(),
-        task_classification=TaskClassification(
-            type="bug_fix", domain="python", complexity="simple"
-        ),
+        session_completeness="completed",
+        reflection_confidence="medium",
+        target_task_classification=tc,
+        observed_work_classification=tc,
         approach=Approach(strategy_summary="patch", tool_sequence=["edit"]),
         observations=SessionObservations(),
         outcome=Outcome(completed=True, user_satisfied=True, evidence="green tests"),

@@ -369,6 +369,95 @@ def _row_to_memory_entry(row: sqlite3.Row) -> MemoryEntry:
     )
 
 
+# ---------- Memory embeddings (vec0) — DEFERRED-FEATURE PREP ----------
+
+# Not called by any v0 code path. SPEC.md §9.6 forbids dynamic retrieval
+# in v0; these helpers exist so the `memory_embeddings` table created in
+# `init_db` is reachable end-to-end (no half-wired schema) and so v0.5's
+# MCP semantic-retrieval server can land without touching this layer.
+# Callers must supply embeddings produced elsewhere — this module never
+# generates them.
+
+
+def save_memory_embedding(
+    memory_id: UUID | str,
+    embedding: list[float],
+    path: Path | str | None = None,
+) -> None:
+    """Insert (or replace) the embedding vector for a memory entry.
+
+    `embedding` must have length `EMBEDDING_DIM` (the vec0 table is
+    dimension-locked at creation). Use `delete_memory_embedding` to remove.
+    """
+    if len(embedding) != EMBEDDING_DIM:
+        raise ValueError(
+            f"embedding has length {len(embedding)}, expected {EMBEDDING_DIM} "
+            f"(table is dimension-locked at creation)"
+        )
+    conn = _connect(_resolve(path))
+    try:
+        with conn:
+            # vec0 INSERT OR REPLACE keyed on the TEXT primary key.
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_embeddings (id, embedding) VALUES (?, ?)",
+                (str(memory_id), sqlite_vec.serialize_float32(embedding)),
+            )
+    finally:
+        conn.close()
+
+
+def delete_memory_embedding(
+    memory_id: UUID | str, path: Path | str | None = None
+) -> None:
+    conn = _connect(_resolve(path))
+    try:
+        with conn:
+            conn.execute(
+                "DELETE FROM memory_embeddings WHERE id = ?", (str(memory_id),)
+            )
+    finally:
+        conn.close()
+
+
+def find_similar_memory_entries(
+    query_embedding: list[float],
+    *,
+    limit: int = 10,
+    path: Path | str | None = None,
+) -> list[tuple[MemoryEntry, float]]:
+    """k-nearest-neighbor lookup over `memory_embeddings`, returning
+    `(MemoryEntry, distance)` pairs sorted ascending by distance.
+
+    Rows whose memory entry is deprecated are skipped. Used by v0.5's MCP
+    semantic-retrieval server; v0 does not call this.
+    """
+    if len(query_embedding) != EMBEDDING_DIM:
+        raise ValueError(
+            f"query_embedding has length {len(query_embedding)}, expected {EMBEDDING_DIM}"
+        )
+    # sqlite-vec's vec0 KNN query requires the k bound inside the WHERE clause
+    # (`k = ?`), not as a SQL LIMIT. We over-fetch slightly so the post-filter
+    # for deprecated entries doesn't starve the result set.
+    conn = _connect(_resolve(path))
+    try:
+        rows = conn.execute(
+            """
+            SELECT me.*, vec.distance AS distance
+              FROM memory_embeddings AS vec
+              JOIN memory_entries     AS me ON me.id = vec.id
+             WHERE vec.embedding MATCH ?
+               AND k = ?
+               AND me.deprecated_at IS NULL
+             ORDER BY vec.distance
+            """,
+            (sqlite_vec.serialize_float32(query_embedding), max(limit * 2, 1)),
+        ).fetchall()
+    finally:
+        conn.close()
+    pairs = [(_row_to_memory_entry(r), float(r["distance"])) for r in rows]
+    return pairs[:limit]
+
+
 # ---------- Dream cycles ----------
 
 def save_dream_cycle(cycle: DreamCycle, path: Path | str | None = None) -> None:

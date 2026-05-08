@@ -55,13 +55,17 @@ class Session(BaseModel):
 
 Confidence = Literal["low", "medium", "high"]
 Scope = Literal["task_specific", "generalizable"]
+Valence = Literal["positive", "negative", "neutral"]
+SessionCompleteness = Literal["completed", "interrupted", "errored", "partial"]
 
 
-class Observation(BaseModel):
+class BehaviorObservation(BaseModel):
+    """A neutral observation of agent behavior (replaces what_worked/what_failed)."""
     observation: str
     evidence: str
     confidence: Confidence
     scope: Scope
+    valence: Valence = "neutral"
 
 
 class ToolUseNote(BaseModel):
@@ -90,8 +94,7 @@ class Approach(BaseModel):
 
 
 class SessionObservations(BaseModel):
-    what_worked: list[Observation] = Field(default_factory=list)
-    what_failed: list[Observation] = Field(default_factory=list)
+    behaviors_observed: list[BehaviorObservation] = Field(default_factory=list)
     tool_use_notes: list[ToolUseNote] = Field(default_factory=list)
     context_observations: str | None = None
 
@@ -114,11 +117,20 @@ class MemoryCandidate(BaseModel):
 
 
 class Reflection(BaseModel):
-    """Stage 1 output: one structured reflection per session."""
+    """Stage 1 output: one structured reflection per session.
+
+    Schema v2: adds `session_completeness` + `reflection_confidence` (the v1
+    prompt-tuning round surfaced cascade caps when these were absent), and
+    splits classification into target (what was asked) vs observed (what the
+    agent actually did) so the consolidator can spot divergence as signal.
+    """
     id: UUID = Field(default_factory=uuid4)
     session_id: UUID
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    task_classification: TaskClassification
+    session_completeness: SessionCompleteness
+    reflection_confidence: Confidence
+    target_task_classification: TaskClassification
+    observed_work_classification: TaskClassification
     approach: Approach
     observations: SessionObservations
     outcome: Outcome

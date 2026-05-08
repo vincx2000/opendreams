@@ -116,7 +116,7 @@ def test_apply_cycle_unknown_target_is_skipped(tmp_db):
     assert store.list_memory_entries(include_deprecated=True, path=tmp_db) == []
 
 
-def test_export_markdown_groups_by_kind(tmp_path, tmp_db):
+def test_export_creates_agents_md_with_markers_when_absent(tmp_path, tmp_db):
     store.save_memory_entry(
         MemoryEntry(kind="pattern", content="P1", scope="g", confidence="high"),
         path=tmp_db,
@@ -125,25 +125,29 @@ def test_export_markdown_groups_by_kind(tmp_path, tmp_db):
         MemoryEntry(kind="failure_mode", content="F1", scope="g", confidence="medium"),
         path=tmp_db,
     )
-    out = tmp_path / "OPENDREAM.md"
-    written = memory.export_markdown(out, path=tmp_db)
+    out = tmp_path / "AGENTS.md"
+    written = memory.export_agents_md(out, path=tmp_db)
 
     text = written.read_text()
-    assert "# OpenDream consolidated memory" in text
-    assert "## Pattern" in text
-    assert "## Failure Mode" in text
+    assert text.startswith("# AGENTS.md")
+    assert memory.BEGIN_MARKER in text
+    assert memory.END_MARKER in text
+    assert "## OpenDream consolidated memory" in text
+    assert "### Pattern" in text
+    assert "### Failure Mode" in text
     assert "- P1" in text
     assert "- F1" in text
 
 
-def test_export_markdown_when_empty(tmp_path, tmp_db):
-    out = tmp_path / "OPENDREAM.md"
-    memory.export_markdown(out, path=tmp_db)
+def test_export_when_memory_empty_writes_placeholder(tmp_path, tmp_db):
+    out = tmp_path / "AGENTS.md"
+    memory.export_agents_md(out, path=tmp_db)
     text = out.read_text()
+    assert memory.BEGIN_MARKER in text and memory.END_MARKER in text
     assert "no consolidated memory yet" in text
 
 
-def test_export_markdown_excludes_deprecated(tmp_path, tmp_db):
+def test_export_excludes_deprecated_entries(tmp_path, tmp_db):
     from datetime import datetime
 
     store.save_memory_entry(
@@ -161,8 +165,95 @@ def test_export_markdown_excludes_deprecated(tmp_path, tmp_db):
         ),
         path=tmp_db,
     )
-    out = tmp_path / "OPENDREAM.md"
-    memory.export_markdown(out, path=tmp_db)
+    out = tmp_path / "AGENTS.md"
+    memory.export_agents_md(out, path=tmp_db)
     text = out.read_text()
     assert "visible" in text
     assert "hidden" not in text
+
+
+def test_export_replaces_only_marked_section_when_file_exists(tmp_path, tmp_db):
+    store.save_memory_entry(
+        MemoryEntry(kind="pattern", content="first export", scope="g", confidence="high"),
+        path=tmp_db,
+    )
+    out = tmp_path / "AGENTS.md"
+    initial = (
+        "# AGENTS.md\n\n"
+        "## My hand-written guidance\n\n"
+        "Don't touch this section.\n\n"
+        f"{memory.BEGIN_MARKER}\nstale opendream content\n{memory.END_MARKER}\n\n"
+        "## More user content below\n\n"
+        "Also keep me.\n"
+    )
+    out.write_text(initial, encoding="utf-8")
+
+    memory.export_agents_md(out, path=tmp_db)
+    text = out.read_text()
+
+    # User content preserved on both sides of the marked section.
+    assert "Don't touch this section." in text
+    assert "Also keep me." in text
+    # Stale content replaced.
+    assert "stale opendream content" not in text
+    assert "first export" in text
+    # Markers still exactly once.
+    assert text.count(memory.BEGIN_MARKER) == 1
+    assert text.count(memory.END_MARKER) == 1
+
+
+def test_export_appends_when_file_exists_without_markers(tmp_path, tmp_db):
+    store.save_memory_entry(
+        MemoryEntry(kind="pattern", content="appended", scope="g", confidence="high"),
+        path=tmp_db,
+    )
+    out = tmp_path / "AGENTS.md"
+    initial = "# Project guidance\n\nKeep all of this.\n"
+    out.write_text(initial, encoding="utf-8")
+
+    memory.export_agents_md(out, path=tmp_db)
+    text = out.read_text()
+    assert text.startswith(initial)
+    assert memory.BEGIN_MARKER in text
+    assert memory.END_MARKER in text
+    assert "appended" in text
+
+
+def test_export_is_idempotent_across_repeated_calls(tmp_path, tmp_db):
+    store.save_memory_entry(
+        MemoryEntry(kind="pattern", content="stable rule", scope="g", confidence="high"),
+        path=tmp_db,
+    )
+    out = tmp_path / "AGENTS.md"
+    memory.export_agents_md(out, path=tmp_db)
+    after_first = out.read_text()
+    memory.export_agents_md(out, path=tmp_db)
+    after_second = out.read_text()
+    # Only differs by the timestamp line; structure stable, no duplicate sections.
+    assert after_first.count(memory.BEGIN_MARKER) == 1
+    assert after_second.count(memory.BEGIN_MARKER) == 1
+    assert after_first.count("stable rule") == after_second.count("stable rule") == 1
+
+
+def test_export_markdown_alias_still_works(tmp_path, tmp_db):
+    """Back-compat alias for the old name."""
+    out = tmp_path / "AGENTS.md"
+    written = memory.export_markdown(out, path=tmp_db)
+    assert written.exists()
+    assert memory.BEGIN_MARKER in written.read_text()
+
+
+def test_memory_show_unknown_id_exits_nonzero(tmp_db):
+    """`opendream memory show <missing-id>` should exit non-zero so scripts
+    can detect the failure (parity with `sessions show` and `reflections show`)."""
+    from uuid import uuid4
+
+    from typer.testing import CliRunner
+
+    from opendream.cli import app
+
+    r = CliRunner().invoke(
+        app, ["memory", "show", str(uuid4()), "--path", str(tmp_db)]
+    )
+    assert r.exit_code != 0
+    assert "not found" in r.stdout

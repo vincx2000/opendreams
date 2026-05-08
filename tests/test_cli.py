@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from opendream import consolidate, reflect, store
@@ -22,7 +24,14 @@ You're welcome.
 
 
 REFLECT_PAYLOAD = {
-    "task_classification": {
+    "session_completeness": "completed",
+    "reflection_confidence": "medium",
+    "target_task_classification": {
+        "type": "bug_fix",
+        "domain": "python",
+        "complexity": "trivial",
+    },
+    "observed_work_classification": {
         "type": "bug_fix",
         "domain": "python",
         "complexity": "trivial",
@@ -33,15 +42,15 @@ REFLECT_PAYLOAD = {
         "decision_points": [],
     },
     "observations": {
-        "what_worked": [
+        "behaviors_observed": [
             {
                 "observation": "single-shot fix landed",
                 "evidence": "[1]",
                 "confidence": "medium",
                 "scope": "task_specific",
+                "valence": "positive",
             }
         ],
-        "what_failed": [],
         "tool_use_notes": [],
         "context_observations": None,
     },
@@ -93,7 +102,7 @@ def test_end_to_end_pipeline(monkeypatch, tmp_path):
     db_path = tmp_path / "db.sqlite"
     history = tmp_path / ".aider.chat.history.md"
     history.write_text(AIDER_HISTORY, encoding="utf-8")
-    out_md = tmp_path / "OPENDREAM.md"
+    out_md = tmp_path / "AGENTS.md"
 
     runner = CliRunner()
 
@@ -101,12 +110,13 @@ def test_end_to_end_pipeline(monkeypatch, tmp_path):
     r = runner.invoke(app, ["init", "--path", str(db_path)])
     assert r.exit_code == 0, r.stdout
 
-    # ingest
+    # ingest (polymorphic)
     r = runner.invoke(
         app, ["ingest", "aider", str(history), "--path", str(db_path)]
     )
     assert r.exit_code == 0, r.stdout
     assert "ingested 1 session" in r.stdout
+    assert "via aider" in r.stdout
 
     # sessions list
     r = runner.invoke(app, ["sessions", "list", "--path", str(db_path)])
@@ -114,7 +124,9 @@ def test_end_to_end_pipeline(monkeypatch, tmp_path):
     assert "fix the typo" in r.stdout
 
     # reflect (mock LLM)
-    monkeypatch.setattr(reflect, "LLMClient", lambda: _StubLLM(REFLECT_PAYLOAD))
+    monkeypatch.setattr(
+        reflect, "LLMClient", lambda *a, **kw: _StubLLM(REFLECT_PAYLOAD)
+    )
     r = runner.invoke(
         app, ["reflect", "--all-pending", "--path", str(db_path)]
     )
@@ -127,7 +139,7 @@ def test_end_to_end_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         consolidate,
         "LLMClient",
-        lambda: _StubLLM(_consolidate_payload(refs)),
+        lambda *a, **kw: _StubLLM(_consolidate_payload(refs)),
     )
     r = runner.invoke(app, ["dream", "--path", str(db_path)])
     assert r.exit_code == 0, r.stdout
@@ -144,5 +156,204 @@ def test_end_to_end_pipeline(monkeypatch, tmp_path):
     )
     assert r.exit_code == 0, r.stdout
     text = out_md.read_text()
-    assert "## Pattern" in text
+    assert "<!-- OPENDREAM:BEGIN -->" in text
+    assert "<!-- OPENDREAM:END -->" in text
+    assert "### Pattern" in text
     assert "agent handles trivial typo fixes" in text
+
+
+def test_ingest_aider_from_stdin(tmp_path):
+    db_path = tmp_path / "db.sqlite"
+    store.init_db(db_path)
+    runner = CliRunner()
+
+    r = runner.invoke(
+        app,
+        ["ingest", "aider", "-", "--path", str(db_path)],
+        input=AIDER_HISTORY,
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "ingested 1 session" in r.stdout
+    assert "<stdin>" in r.stdout
+    assert len(store.list_sessions(path=db_path)) == 1
+
+
+def test_ingest_unknown_adapter_errors_with_registry_listing(tmp_path):
+    db_path = tmp_path / "db.sqlite"
+    store.init_db(db_path)
+    runner = CliRunner()
+    r = runner.invoke(
+        app, ["ingest", "nonexistent", "/dev/null", "--path", str(db_path)]
+    )
+    assert r.exit_code != 0
+    output = r.stdout + (r.stderr or "")
+    assert "unknown adapter" in output
+    assert "claude_code" in output  # registry shown
+
+
+def test_ingest_nonexistent_source_path_errors_cleanly(tmp_path):
+    """Bad source path must raise a clean message, not a stack trace.
+
+    Pre-fix bug: claude_code's discover_sessions silently fell back to
+    `~/.claude/projects/` when the source didn't exist — privacy footgun
+    on typo'd paths."""
+    db_path = tmp_path / "db.sqlite"
+    store.init_db(db_path)
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["ingest", "claude_code", "/no/such/path/xyz", "--path", str(db_path)],
+    )
+    assert r.exit_code != 0
+    output = r.stdout + (r.stderr or "")
+    assert "does not exist" in output
+    # Should never silently slurp ~/.claude/projects/
+    assert "ingested" not in output
+
+
+def test_ingest_uninitialized_db_errors_cleanly(tmp_path, sample_session):
+    """If the DB file doesn't exist, ingest tells the user to run `init`,
+    instead of bubbling sqlite3.OperationalError."""
+    src = tmp_path / "session.jsonl"
+    src.write_text(sample_session.model_dump_json() + "\n", encoding="utf-8")
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        [
+            "ingest",
+            "generic_jsonl",
+            str(src),
+            "--path",
+            str(tmp_path / "uninit.sqlite"),
+        ],
+    )
+    assert r.exit_code != 0
+    output = r.stdout + (r.stderr or "")
+    assert "database not initialized" in output
+    assert "opendream init" in output
+
+
+def test_ingest_stdin_unlinks_tempfile_even_when_adapter_raises(tmp_path):
+    """Regression: stdin ingest used `NamedTemporaryFile(delete=False)` and
+    only unlinked on the success path. If `parse_sessions` raised, the temp
+    file leaked. Now wrapped in try/finally.
+
+    Direct attribute swap (not monkeypatch) because we need the patch on the
+    `tempfile` module visible to the CLI's `tempfile.NamedTemporaryFile`
+    call at runtime — pytest's monkeypatch tooling doesn't reach into
+    CliRunner-invoked code paths the same way for module-level shims.
+    """
+    import tempfile as _tempfile
+
+    db_path = tmp_path / "db.sqlite"
+    store.init_db(db_path)
+
+    real_named = _tempfile.NamedTemporaryFile
+    created: list[Path] = []
+
+    def tracking_named(*args, **kwargs):
+        kwargs.setdefault("dir", str(tmp_path))
+        f = real_named(*args, **kwargs)
+        created.append(Path(f.name))
+        return f
+
+    # Make the adapter raise mid-parse so we exercise the finally path.
+    from opendream.adapters import generic_jsonl
+
+    def boom(self, path):
+        raise RuntimeError("simulated parse failure")
+
+    real_parse = generic_jsonl.GenericJsonlAdapter.parse_sessions
+    _tempfile.NamedTemporaryFile = tracking_named
+    generic_jsonl.GenericJsonlAdapter.parse_sessions = boom
+    try:
+        runner = CliRunner()
+        r = runner.invoke(
+            app,
+            ["ingest", "generic_jsonl", "-", "--path", str(db_path)],
+            input='{"agent": "x"}\n',
+        )
+    finally:
+        _tempfile.NamedTemporaryFile = real_named
+        generic_jsonl.GenericJsonlAdapter.parse_sessions = real_parse
+
+    assert r.exit_code != 0  # adapter blew up; CLI should propagate
+    assert created, "the test should have observed at least one tempfile"
+    for p in created:
+        assert not p.exists(), (
+            f"tempfile {p} leaked after adapter raised "
+            "(should have been unlinked in `finally`)"
+        )
+
+
+def test_ingest_generic_jsonl_round_trips(tmp_path, sample_session):
+    db_path = tmp_path / "db.sqlite"
+    store.init_db(db_path)
+    src = tmp_path / "sessions.jsonl"
+    src.write_text(sample_session.model_dump_json() + "\n", encoding="utf-8")
+
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        ["ingest", "generic_jsonl", str(src), "--path", str(db_path)],
+        input="",
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "ingested 1 session" in r.stdout
+    assert "via generic_jsonl" in r.stdout
+    assert len(store.list_sessions(path=db_path)) == 1
+
+
+def test_memory_diff_lists_recent_dream_cycles(tmp_path):
+    from datetime import datetime, timedelta
+    from uuid import uuid4
+
+    from opendream.trace import DreamCycle, MemoryUpdate
+
+    db_path = tmp_path / "db.sqlite"
+    store.init_db(db_path)
+
+    old = DreamCycle(
+        reflections_considered=[uuid4()],
+        summary="ancient cycle",
+        updates=[],
+        applied=True,
+        applied_at=datetime(2026, 1, 1),
+    )
+    recent = DreamCycle(
+        reflections_considered=[uuid4()],
+        summary="recent dream — added a pattern",
+        updates=[
+            MemoryUpdate(
+                operation="add",
+                kind="pattern",
+                content="agent prefers small diffs",
+                reason="seen across reflections",
+                evidence=[uuid4()],
+                confidence="high",
+                scope="generalizable",
+            )
+        ],
+        applied=True,
+        applied_at=datetime.utcnow() - timedelta(hours=1),
+    )
+    store.save_dream_cycle(old, path=db_path)
+    store.save_dream_cycle(recent, path=db_path)
+
+    runner = CliRunner()
+    cutoff = (datetime.utcnow() - timedelta(days=1)).isoformat(timespec="seconds")
+    r = runner.invoke(
+        app, ["memory", "diff", "--since", cutoff, "--path", str(db_path)]
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "recent dream" in r.stdout
+    assert "ancient cycle" not in r.stdout
+    assert "add" in r.stdout
+    assert "pattern" in r.stdout
+
+
+def test_memory_diff_rejects_bad_since():
+    runner = CliRunner()
+    r = runner.invoke(app, ["memory", "diff", "--since", "yesterday"])
+    assert r.exit_code != 0
+    assert "ISO 8601" in r.stdout or "ISO 8601" in (r.stderr or "")

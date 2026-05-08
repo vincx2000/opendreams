@@ -4,7 +4,7 @@ opendream.adapters.aider
 
 Parser for Aider's `.aider.chat.history.md` format.
 
-Real-world Aider history convention (slightly more specific than CLAUDE.md §15):
+Real-world Aider history convention (slightly more specific than SPEC.md §15):
 - A new session starts with a line matching `# aider chat started at <timestamp>`.
 - User input is recorded as one or more *consecutive* lines prefixed with `#### `;
   each line carries one line of the user's prompt.
@@ -14,6 +14,10 @@ Real-world Aider history convention (slightly more specific than CLAUDE.md §15)
 We tolerate noise: leading content before the first banner is ignored, banners
 with unrecognized timestamp formats fall back to the file's mtime, and empty
 sessions are dropped instead of crashing.
+
+The `AiderAdapter` class implements the polymorphic `Adapter` interface; the
+module-level `parse` / `parse_file` functions are preserved as the actual
+implementation (and remain importable for callers / tests that prefer them).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
+from opendream.adapters.base import Adapter, register_adapter
 from opendream.trace import Message, MessageRole, Session
 
 
@@ -133,3 +138,23 @@ def _parse_messages(body: str) -> Iterator[Message]:
         if content:
             yield Message(index=idx, role=MessageRole.ASSISTANT, content=content)
             idx += 1
+
+
+@register_adapter
+class AiderAdapter(Adapter):
+    """`Adapter` wrapper around the existing Aider parser."""
+
+    name = "aider"
+
+    def discover_sessions(self, root: Path) -> list[Path]:
+        """Return every `.aider.chat.history.md` file under `root`.
+
+        If `root` is itself a file (the common case — a user pointing at their
+        history file directly), return just that path.
+        """
+        if root.is_file():
+            return [root]
+        return sorted(root.rglob(".aider.chat.history.md"))
+
+    def parse_sessions(self, path: Path) -> list[Session]:
+        return parse_file(path)

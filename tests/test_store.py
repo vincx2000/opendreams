@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 from uuid import uuid4
 
+import pytest
 import sqlite_vec
 
 from opendream import store
@@ -85,11 +86,13 @@ def test_list_sessions_orders_by_started_at(tmp_db, sample_session):
 
 def test_reflection_round_trip(tmp_db, sample_session):
     store.save_session(sample_session, path=tmp_db)
+    tc = TaskClassification(type="bug_fix", domain="python", complexity="simple")
     ref = Reflection(
         session_id=sample_session.id,
-        task_classification=TaskClassification(
-            type="bug_fix", domain="python", complexity="simple"
-        ),
+        session_completeness="completed",
+        reflection_confidence="medium",
+        target_task_classification=tc,
+        observed_work_classification=tc,
         approach=Approach(strategy_summary="read then patch", tool_sequence=["read", "edit"]),
         observations=SessionObservations(),
         outcome=Outcome(completed=True, user_satisfied=True, evidence="user said thanks"),
@@ -99,7 +102,9 @@ def test_reflection_round_trip(tmp_db, sample_session):
     assert loaded is not None
     assert loaded.id == ref.id
     assert loaded.session_id == sample_session.id
-    assert loaded.task_classification.type == "bug_fix"
+    assert loaded.target_task_classification.type == "bug_fix"
+    assert loaded.session_completeness == "completed"
+    assert loaded.reflection_confidence == "medium"
     assert ref in store.list_reflections(path=tmp_db)
 
 
@@ -123,6 +128,70 @@ def test_memory_entry_round_trip_and_filter(tmp_db):
 
     everything = store.list_memory_entries(include_deprecated=True, path=tmp_db)
     assert {e.id for e in everything} == {active.id, deprecated.id}
+
+
+def test_memory_embedding_round_trip_and_knn(tmp_db):
+    """Wire-check for the vec0 memory_embeddings table.
+
+    v0 doesn't auto-generate embeddings (§9.6: no dynamic retrieval), but the
+    table must be reachable end-to-end so v0.5's MCP server can land without
+    touching this layer. Tests a manually-supplied embedding.
+    """
+    near = MemoryEntry(
+        kind="pattern", content="near entry", scope="generalizable", confidence="high"
+    )
+    far = MemoryEntry(
+        kind="pattern", content="far entry", scope="generalizable", confidence="high"
+    )
+    deprecated = MemoryEntry(
+        kind="pattern",
+        content="deprecated entry",
+        scope="generalizable",
+        confidence="high",
+        deprecated_at=datetime(2026, 5, 1),
+        deprecation_reason="superseded",
+    )
+    for e in (near, far, deprecated):
+        store.save_memory_entry(e, path=tmp_db)
+
+    # Build trivial unit vectors that differ in known dimensions.
+    near_vec = [1.0] + [0.0] * (store.EMBEDDING_DIM - 1)
+    far_vec = [0.0] * (store.EMBEDDING_DIM - 1) + [1.0]
+    deprecated_vec = [0.5, 0.5] + [0.0] * (store.EMBEDDING_DIM - 2)
+    store.save_memory_embedding(near.id, near_vec, path=tmp_db)
+    store.save_memory_embedding(far.id, far_vec, path=tmp_db)
+    store.save_memory_embedding(deprecated.id, deprecated_vec, path=tmp_db)
+
+    # Query closer to `near_vec` than `far_vec`.
+    results = store.find_similar_memory_entries(near_vec, limit=5, path=tmp_db)
+    ids_in_order = [entry.id for entry, _dist in results]
+    assert ids_in_order[0] == near.id, ids_in_order
+    # Deprecated entries are excluded
+    assert deprecated.id not in ids_in_order
+    # Distances are sorted ascending
+    distances = [d for _e, d in results]
+    assert distances == sorted(distances)
+
+
+def test_memory_embedding_rejects_wrong_dimension(tmp_db):
+    entry = MemoryEntry(
+        kind="pattern", content="x", scope="generalizable", confidence="high"
+    )
+    store.save_memory_entry(entry, path=tmp_db)
+    with pytest.raises(ValueError, match="dimension-locked"):
+        store.save_memory_embedding(entry.id, [0.1, 0.2], path=tmp_db)
+
+
+def test_memory_embedding_delete(tmp_db):
+    entry = MemoryEntry(
+        kind="pattern", content="x", scope="generalizable", confidence="high"
+    )
+    store.save_memory_entry(entry, path=tmp_db)
+    vec = [1.0] + [0.0] * (store.EMBEDDING_DIM - 1)
+    store.save_memory_embedding(entry.id, vec, path=tmp_db)
+    assert store.find_similar_memory_entries(vec, limit=1, path=tmp_db)
+    store.delete_memory_embedding(entry.id, path=tmp_db)
+    assert store.find_similar_memory_entries(vec, limit=1, path=tmp_db) == []
 
 
 def test_dream_cycle_round_trip(tmp_db):

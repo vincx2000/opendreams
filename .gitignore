@@ -13,3 +13,8 @@ venv/
 *.sqlite
 *.sqlite-journal
 .DS_Store
+
+# OpenDream-specific runtime artefacts that should never be committed
+AGENTS.md            # the pipeline's OUTPUT in any project that runs OpenDream
+.opendream-eval/     # per-trial workspaces produced by `opendream eval run`
+/tmp/od_dryrun/      # local prompt-tuning dry-run scratchpad (also outside repo)

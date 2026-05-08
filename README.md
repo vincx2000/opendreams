@@ -1,13 +1,234 @@
 # OpenDream
 
-Memory consolidation for AI agents — works with any model, any framework.
+**Memory consolidation for AI agents — works with any model, any framework.**
 
-> **Status:** v0 scaffolding. The polished pitch, quickstart, and eval numbers
-> land in Week 2 per `CLAUDE.md` §8. See `CLAUDE.md` for the full specification.
+[![CI](https://github.com/vincx2000/opendreams/actions/workflows/ci.yml/badge.svg)](https://github.com/vincx2000/opendreams/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+[![Status](https://img.shields.io/badge/status-v0--alpha-orange.svg)](#roadmap)
+
+Anthropic's *Dreaming* (May 6, 2026) is a memory-consolidation pass that runs
+between Claude Managed Agent sessions, surfaces recurring patterns and
+mistakes, and updates the agent's long-term memory. Harvey reported a ~6× lift
+in completion rates after using it.
+
+That capability is currently locked to Anthropic Managed Agents. **OpenDream is
+the open-source equivalent** for any agent stack and any model.
+
+> On a fixed 15-task FastAPI suite, agents with OpenDream-consolidated memory
+> finished `[EVAL_LIFT_PCT]` percentage points more tasks than baseline
+> (5 trials per task per condition). _Number measured `[EVAL_DATE]`._
+
+## What it does
+
+```
+   Agent session (raw)
+        │
+        ▼
+   ┌─────────┐    ┌──────────┐    ┌─────────────┐    ┌──────────┐
+   │  TRACE  │───▶│  REFLECT │───▶│ CONSOLIDATE │───▶│  MEMORY  │
+   └─────────┘    └──────────┘    └─────────────┘    └──────────┘
+   adapter        per-session     cross-session       AGENTS.md
+   ingests        observations    pattern             (idempotent
+   raw history    (Stage 1 LLM)   extraction          section)
+                                  (Stage 2 LLM)
+```
+
+- **Trace.** An adapter normalizes your agent's raw history into a `Session`.
+  Three adapters ship in v0:
+  - `claude_code` — reads `~/.claude/projects/*.jsonl` (flagship)
+  - `aider` — reads `.aider.chat.history.md`
+  - `generic_jsonl` — universal escape hatch (any project can emit this)
+- **Reflect (Stage 1).** One LLM call per session produces a structured
+  `Reflection`: what task, what worked, what failed, decision points,
+  candidates for memory.
+- **Consolidate (Stage 2 — the "dream").** One LLM call per cycle takes N
+  reflections + the current consolidated memory, and proposes
+  add / modify / deprecate updates.
+- **Memory.** A versioned store. Every dream produces a diff. Export to
+  `AGENTS.md` between idempotent OpenDream markers — your agent reads it on
+  the next session.
 
 ## Quickstart
 
+The bare minimum (assumes `OPENAI_API_KEY` already exported in your shell):
+
 ```bash
+git clone https://github.com/vincx2000/opendreams && cd opendreams
 pip install -e .
 opendream init
+opendream ingest claude_code ~/.claude/projects/<your-project>/
+opendream reflect --all-pending && opendream dream && opendream memory export
 ```
+
+Five commands. Your project now has an `AGENTS.md` with consolidated memory
+between `<!-- OPENDREAM:BEGIN -->` / `<!-- OPENDREAM:END -->` markers. Cursor,
+Codex, OpenAI Agents, and Copilot agent mode read it natively. Claude Code
+users: `ln -s AGENTS.md CLAUDE.md` and you're done.
+
+Other adapters:
+
+```bash
+opendream ingest aider         path/to/.aider.chat.history.md
+opendream ingest generic_jsonl path/to/sessions.jsonl
+```
+
+Anthropic instead of OpenAI:
+
+```bash
+export OPENDREAM_LLM_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=...
+```
+
+Defaults table is below.
+
+## How does this compare?
+
+|  | Storage | Retrieval | **Consolidation pass** | License |
+|---|:-:|:-:|:-:|---|
+| Anthropic Managed Agents *Dreaming* | ✓ | ✓ | ✓ | closed, paid |
+| Letta (formerly MemGPT) | ✓ | ✓ | — | OSS |
+| mem0 | ✓ | ✓ | — | OSS |
+| **OpenDream** | ✓ | (v0.5) | **✓** | MIT |
+
+The empty slot is the consolidation pass — the offline step that reads many
+sessions, finds patterns, and rewrites memory so it stays high-signal as it
+grows. OpenDream is exactly that, agent-agnostic and BYO LLM. Storage and
+direct retrieval are intentionally minimal in v0; pair OpenDream with Letta
+or mem0 if you need rich query semantics — they're complementary, not
+competitors.
+
+## Memory injection: AGENTS.md
+
+OpenDream writes consolidated memory into your project's `AGENTS.md` between
+two markers:
+
+```markdown
+<!-- OPENDREAM:BEGIN -->
+…consolidated memory…
+<!-- OPENDREAM:END -->
+```
+
+`AGENTS.md` is the cross-framework standard read natively by Cursor, Codex,
+OpenAI agents, GitHub Copilot agent mode, and 60K+ repos. The exporter only
+ever rewrites the content between the markers, so any other content in
+`AGENTS.md` is preserved.
+
+### Claude Code users
+
+Claude Code reads `CLAUDE.md`, not `AGENTS.md`. Symlink them:
+
+```bash
+ln -s AGENTS.md CLAUDE.md
+```
+
+Now Claude Code, Cursor, Codex, and Copilot all see the same consolidated
+memory.
+
+## LLM backend
+
+Dual-backend client. Provider-agnostic from your code's perspective.
+
+```bash
+# Anthropic native (recommended for the dream step):
+export OPENDREAM_LLM_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=...
+
+# Or OpenAI-compatible (works with OpenAI, Ollama, vLLM, Together, Groq, …):
+export OPENDREAM_LLM_PROVIDER=openai     # default
+export OPENAI_API_KEY=...
+export OPENDREAM_LLM_BASE_URL=...        # only for non-OpenAI endpoints
+```
+
+### Env-var reference
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENDREAM_LLM_PROVIDER` | `openai` | `openai` or `anthropic` |
+| `OPENDREAM_REFLECT_MODEL` | `gpt-4o-mini` (OpenAI) / `claude-haiku-4-5-20251001` (Anthropic) | Stage 1 — cheap, runs per session |
+| `OPENDREAM_DREAM_MODEL`   | `gpt-4o` (OpenAI) / `claude-sonnet-4-6` (Anthropic)         | Stage 2 — quality, runs per cycle |
+| `OPENDREAM_LLM_BASE_URL`  | OpenAI's endpoint | Only set for Ollama / vLLM / Together / Groq / Fireworks |
+| `OPENDREAM_LLM_API_KEY`   | falls back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Shared override |
+
+Reflect (Stage 1) and Dream (Stage 2) have opposite cost/quality profiles, so
+they get separate model selectors.
+
+## Plugging in your stack
+
+If your agent framework isn't covered by the three v0 adapters, write your
+own. Subclass `Adapter`, decorate with `@register_adapter`, ~50 lines.
+
+See [`docs/ADAPTERS.md`](docs/ADAPTERS.md) for the universal `generic_jsonl`
+schema and a custom-adapter template.
+
+## Prompt-tuning loop
+
+The two pipeline meta-prompts (`opendream/prompts/reflect.md` and
+`consolidate.md`) are deliberately editable. To tune them against your real
+sessions without burning tokens:
+
+```bash
+# Render the prompt that would be sent for a session, no LLM call:
+opendream reflect --dry-run --session-id <id>
+# → /tmp/od_dryrun/reflect_<id>.txt
+
+# Iterate on prompts/reflect.md, then either run the LLM normally:
+opendream reflect --session-id <id> --show-json
+
+# …or hand-author the JSON in your tool of choice and import:
+cat reflection.json | opendream reflect --import-json --session-id <id>
+```
+
+Same `--dry-run` / `--import-json` / `--from` triple on `opendream dream`.
+
+For sessions where Write/Edit tool calls embed full file contents (typical
+Claude Code sessions can balloon to 165K+ tokens), use
+`--max-message-chars 1000` to compress the rendered prompt before reflect.
+
+## What's stored where?
+
+| | |
+|---|---|
+| `~/.opendream/db.sqlite` | Sessions, reflections, dream cycles (one SQLite file) |
+| `<your project>/AGENTS.md` | Consolidated memory, between OpenDream markers |
+| Anywhere else | Nothing — sessions never leave your machine unless you point at a hosted LLM |
+
+`chmod 600 ~/.opendream/db.sqlite` if your home directory is shared.
+
+## v0 status
+
+This is v0. The full spec lives in [`SPEC.md`](SPEC.md). What's done:
+
+- [x] Three-stage pipeline (trace → reflect → consolidate → memory)
+- [x] Three adapters (claude_code, aider, generic_jsonl) on a polymorphic base
+- [x] AGENTS.md export with idempotent markers
+- [x] Dual-backend LLM client (OpenAI-compat + Anthropic native)
+- [x] Eval harness with FastAPI fixture suite (15 tasks)
+- [x] CI: ruff + mypy + pytest on Python 3.11 + 3.12
+- [ ] Eval `[EVAL_LIFT_PCT]` measured on 15-task suite, 5 trials/condition
+- [ ] 60-second demo (asciinema)
+- [ ] v0 ship
+
+## Roadmap
+
+- **v0.5** — MCP server for dynamic memory retrieval (replaces the static
+  `AGENTS.md` flow when you need it); structured tool-call extraction
+  (currently inlined as `<tool_use name="X">…</tool_use>` markers).
+- **v1.0** — Multi-agent shared dreams; federated cross-organization
+  dreaming.
+
+No promises, no dates. The
+[issues](https://github.com/vincx2000/opendreams/issues) labelled `v0.5` and
+`v1` are the planning surface.
+
+## Contributing
+
+PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, the
+locked architectural decisions ([`SPEC.md`](SPEC.md) §5 and §9), and the
+new-adapter workflow.
+
+Found a bug or a security issue? See [`SECURITY.md`](SECURITY.md).
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

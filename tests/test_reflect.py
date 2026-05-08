@@ -14,7 +14,14 @@ class StubLLM:
 
 
 REFLECTION_PAYLOAD = {
-    "task_classification": {
+    "session_completeness": "completed",
+    "reflection_confidence": "medium",
+    "target_task_classification": {
+        "type": "bug_fix",
+        "domain": "python",
+        "complexity": "simple",
+    },
+    "observed_work_classification": {
         "type": "bug_fix",
         "domain": "python",
         "complexity": "simple",
@@ -25,15 +32,15 @@ REFLECTION_PAYLOAD = {
         "decision_points": [],
     },
     "observations": {
-        "what_worked": [
+        "behaviors_observed": [
             {
                 "observation": "the patch landed cleanly",
                 "evidence": "[1]",
                 "confidence": "medium",
                 "scope": "task_specific",
+                "valence": "positive",
             }
         ],
-        "what_failed": [],
         "tool_use_notes": [],
         "context_observations": None,
     },
@@ -51,8 +58,12 @@ def test_reflect_on_returns_validated_reflection(sample_session):
     ref = reflect.reflect_on(sample_session, client=stub)
 
     assert ref.session_id == sample_session.id
-    assert ref.task_classification.type == "bug_fix"
-    assert ref.observations.what_worked[0].observation == "the patch landed cleanly"
+    assert ref.target_task_classification.type == "bug_fix"
+    assert ref.observed_work_classification.type == "bug_fix"
+    assert ref.session_completeness == "completed"
+    assert ref.reflection_confidence == "medium"
+    assert ref.observations.behaviors_observed[0].observation == "the patch landed cleanly"
+    assert ref.observations.behaviors_observed[0].valence == "positive"
     assert len(stub.calls) == 1
 
 
@@ -75,3 +86,48 @@ def test_reflect_on_handles_unknown_outcome(sample_session):
     reflect.reflect_on(sample_session, client=stub)
     _, user = stub.calls[0]
     assert "unknown" in user
+
+
+def test_render_session_truncates_each_message(sample_session):
+    """`max_message_chars` caps each message body and appends an elision marker."""
+    long_body = "X" * 5000
+    sample_session.messages[1].content = long_body
+
+    full = reflect._render_session(sample_session, max_message_chars=None)
+    capped = reflect._render_session(sample_session, max_message_chars=200)
+
+    assert long_body in full
+    assert long_body not in capped
+    assert "[truncated: 4800 chars elided]" in capped
+    # Other (short) messages are untouched
+    assert sample_session.messages[0].content in capped
+
+
+def test_render_session_no_cap_preserves_content(sample_session):
+    """Default behavior is no truncation — all content preserved."""
+    rendered = reflect._render_session(sample_session)
+    for m in sample_session.messages:
+        assert m.content in rendered
+
+
+def test_render_prompt_forwards_max_message_chars(sample_session):
+    """The CLI flag's value should propagate from render_prompt down to
+    _render_session, AND the exact truncation-marker format must surface in
+    the rendered prompt. Off-by-one risk if anyone touches the truncation
+    logic — this assertion locks the full marker contract.
+    """
+    sample_session.messages[1].content = "Y" * 3000
+    _, user_capped = reflect.render_prompt(sample_session, max_message_chars=100)
+    _, user_full = reflect.render_prompt(sample_session, max_message_chars=None)
+
+    # Exact marker text — `[truncated: <N> chars elided]` where N = total - cap.
+    assert "[truncated: 2900 chars elided]" in user_capped, (
+        "the truncation marker is missing from the rendered prompt; "
+        "format string in opendream/reflect.py may have drifted"
+    )
+    assert "[truncated:" not in user_full
+
+    # Body before the marker must stop at the cap (defense against off-by-one).
+    head = "Y" * 100
+    assert head in user_capped
+    assert "Y" * 101 not in user_capped
