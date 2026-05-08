@@ -13,7 +13,10 @@ mistakes, and updates the agent's long-term memory. Harvey reported a ~6× lift
 in completion rates after using it.
 
 That capability is currently locked to Anthropic Managed Agents. **OpenDream is
-the open-source equivalent** for any agent stack and any model.
+the open-source equivalent** for any agent stack and any model — record
+sessions in one tool (Claude Code, Aider) and the consolidated memory works in
+the next (Cursor, Codex, OpenHands, Copilot), since `AGENTS.md` is the
+cross-framework standard.
 
 > On a fixed 15-task FastAPI suite, agents with OpenDream-consolidated memory
 > finished `[EVAL_LIFT_PCT]` percentage points more tasks than baseline
@@ -51,36 +54,38 @@ the open-source equivalent** for any agent stack and any model.
 
 ## Quickstart
 
-The bare minimum (assumes `OPENAI_API_KEY` already exported in your shell):
+### 1. Pick your adapter
+
+| Your agent / tool | Adapter | Where its history lives |
+|---|---|---|
+| Claude Code | `claude_code` | `~/.claude/projects/<id>/*.jsonl` — find `<id>` with `ls ~/.claude/projects/` |
+| Aider | `aider` | `<repo>/.aider.chat.history.md` |
+| Cursor, Codex, Copilot, OpenHands, Continue, anything else | `generic_jsonl` | you emit it — see [`docs/ADAPTERS.md`](docs/ADAPTERS.md) |
+
+### 2. Install + run
 
 ```bash
 git clone https://github.com/vincx2000/opendreams && cd opendreams
 pip install -e .
 opendream init
-opendream ingest claude_code ~/.claude/projects/<your-project>/
+
+# Pick the line that matches your adapter from step 1:
+opendream ingest claude_code   ~/.claude/projects/<your-project>/
+opendream ingest aider         path/to/.aider.chat.history.md
+opendream ingest generic_jsonl path/to/sessions.jsonl
+
 opendream reflect --all-pending && opendream dream && opendream memory export
 ```
 
-Five commands. Your project now has an `AGENTS.md` with consolidated memory
-between `<!-- OPENDREAM:BEGIN -->` / `<!-- OPENDREAM:END -->` markers. Cursor,
-Codex, OpenAI Agents, and Copilot agent mode read it natively. Claude Code
-users: `ln -s AGENTS.md CLAUDE.md` and you're done.
+Assumes `OPENAI_API_KEY` is exported. Other backends work too — set
+`OPENDREAM_LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`, or point at any
+OpenAI-compatible local model (Ollama, vLLM, Together, Groq, Fireworks); see
+[LLM backend](#llm-backend) for the full env-var table.
 
-Other adapters:
-
-```bash
-opendream ingest aider         path/to/.aider.chat.history.md
-opendream ingest generic_jsonl path/to/sessions.jsonl
-```
-
-Anthropic instead of OpenAI:
-
-```bash
-export OPENDREAM_LLM_PROVIDER=anthropic
-export ANTHROPIC_API_KEY=...
-```
-
-Defaults table is below.
+Your project now has an `AGENTS.md` with consolidated memory between
+`<!-- OPENDREAM:BEGIN -->` / `<!-- OPENDREAM:END -->` markers. Cursor, Codex,
+OpenAI Agents, OpenHands, Continue, and Copilot agent mode read it natively.
+Claude Code users: `ln -s AGENTS.md CLAUDE.md` and you're done.
 
 ## How does this compare?
 
