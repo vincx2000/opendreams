@@ -1,5 +1,14 @@
 ---
 name: Feature request
+about: Suggest an idea for this project
+title: ''
+labels: ''
+assignees: ''
+
+---
+
+---
+name: Feature request
 about: Suggest a new capability for OpenDream
 title: "[feat] "
 labels: enhancement
