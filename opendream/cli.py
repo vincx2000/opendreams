@@ -690,7 +690,11 @@ def eval_run(
     if baseline_only and dreamed_only:
         raise typer.BadParameter("--baseline and --dreamed are mutually exclusive")
     if dreamed_only and agents_md is None:
-        raise typer.BadParameter("--dreamed requires --agents-md")
+        # Use plain stderr write rather than typer.BadParameter: on Click 8.2+
+        # the Rich-formatted error panel hides the message body from CliRunner's
+        # captured stderr, breaking tests that assert on the message text.
+        typer.echo("error: --dreamed requires --agents-md", err=True)
+        raise typer.Exit(2)
 
     runner: AgentRunner
     if runner_name == "claude_code":
@@ -698,10 +702,12 @@ def eval_run(
     elif runner_name == "aider":
         runner = AiderRunner()
     else:
-        raise typer.BadParameter(
-            f"unknown --runner {runner_name!r}; expected one of "
-            "['aider', 'claude_code']"
+        typer.echo(
+            f"error: unknown --runner {runner_name!r}; expected one of "
+            "['aider', 'claude_code']",
+            err=True,
         )
+        raise typer.Exit(2)
 
     tasks = load_tasks(tasks_dir)
     if only:

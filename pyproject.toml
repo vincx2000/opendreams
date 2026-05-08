@@ -35,6 +35,14 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# Eval-only deps: required by eval/fixtures/library_api/ (the FastAPI codebase
+# under test by `opendream eval run`). Not in main `dependencies` because §5
+# caps runtime deps at 6 — the fixture is testing-only, not shipped runtime.
+eval = [
+    "fastapi>=0.110",
+    "pydantic[email]>=2.6",
+    "httpx>=0.27",
+]
 
 [project.scripts]
 opendream = "opendream.cli:app"
