@@ -57,11 +57,22 @@ Initial public release.
 
 ### Known limitations
 
-- **Eval lift number not yet measured.** The README still shows
-  `[EVAL_LIFT_PCT]` and `[EVAL_DATE]` placeholders — these get filled by an
-  actual run on a host with a `claude` CLI on `PATH` and an LLM API key.
+- **Eval result: cross-domain run measured +0.0pp aggregate lift (2026-05-09)**,
+  with real per-task signal the aggregate hides: **+40pp** on
+  `13_typed_storage_dataclass` (refactor), **−20pp each** on
+  `07_bulk_create_members` and `09_member_loan_history` (features), and 12
+  tasks ceiling-effected at 100% baseline. Memory was consolidated from
+  sessions of building OpenDream itself, then injected while the agent
+  worked on a different codebase — that's a **cross-domain test, not the
+  domain-matched test** Anthropic's *Dreaming* claims to pass. v0.0.2 will
+  run the correct two-pass eval (collect baseline transcripts → dream over
+  them → re-run dreamed on the same suite). The −20pp regressions are a
+  measurable cross-project memory-pollution finding worth recording. SPEC §3
+  ship criterion 3 (≥5pp on cross-domain suite) was not met by 0.0.1-alpha;
+  v0.0.2's domain-matched eval is the credibility commitment. Per-task
+  breakdown lives in [`README.md`](README.md#v001-alpha-eval-result-2026-05-09).
 - **No PyPI package yet.** Install from source via `pip install -e .`
-  inside a clone. Coming to PyPI in `0.0.2` once the eval number is in.
+  inside a clone. PyPI lands once the v0.0.2 domain-matched eval is in.
 - **No dynamic memory retrieval.** v0 only writes static `AGENTS.md`. MCP
   server lands in v0.5.
 - **Aider's tool-use blocks stay inlined as raw text** (Markdown fenced

@@ -18,12 +18,24 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from opendream.llm import LLMClient
 from opendream.trace import Reflection, Session
 
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "reflect.md"
 SYSTEM_PROMPT = "You are a meta-cognitive observer for an AI agent."
+
+
+class OversizedSessionError(ValueError):
+    """Session's rendered prompt exceeds the model's context window.
+
+    Raised when the provider rejects the request with a context-length error
+    (Anthropic: 'prompt is too long', OpenAI: 'context_length_exceeded').
+    `--all-pending` callers skip-and-continue rather than aborting the batch,
+    since this is a property of the session not a transient failure.
+    """
 
 
 def render_prompt(
@@ -66,11 +78,58 @@ def reflect_on(
     prompt_path: Path | None = None,
     max_message_chars: int | None = None,
 ) -> Reflection:
-    """Produce a Reflection for the given session via Stage 1."""
+    """Produce a Reflection for the given session via Stage 1.
+
+    Single retry on ValidationError: cheaper Stage 1 models (Haiku, gpt-4o-mini)
+    occasionally drop required sub-fields on list entries (e.g. omitting
+    `evidence` on a `tool_use_notes` item). When that happens we re-prompt once
+    with the Pydantic error appended as feedback. If the retry still fails, the
+    ValidationError propagates — `--all-pending` callers should skip-and-continue.
+
+    Oversized sessions (rendered prompt over the model's context window) are
+    re-raised as `OversizedSessionError` so callers can distinguish them from
+    transient failures and skip rather than retry.
+    """
     system, user_prompt = render_prompt(session, prompt_path, max_message_chars)
     cli = client or LLMClient(purpose="reflect")
-    data = cli.complete_json(system, user_prompt)
-    return reflection_from_json(data, session.id)
+    try:
+        data = cli.complete_json(system, user_prompt)
+    except Exception as exc:
+        if _is_context_length_error(exc):
+            raise OversizedSessionError(
+                f"session {session.id} rendered prompt exceeds model context: {exc}"
+            ) from exc
+        raise
+    try:
+        return reflection_from_json(data, session.id)
+    except ValidationError as exc:
+        feedback = (
+            "\n\nYour previous response failed schema validation with these errors:\n"
+            f"{exc}\n\n"
+            "Return the JSON again with ALL required fields populated for every "
+            "entry in every list. Do not omit any field marked required."
+        )
+        retry_data = cli.complete_json(system, user_prompt + feedback)
+        return reflection_from_json(retry_data, session.id)
+
+
+def _is_context_length_error(exc: BaseException) -> bool:
+    """Detect provider 400s caused by prompt-too-long, across SDKs.
+
+    Anthropic raises `anthropic.BadRequestError` with body
+    `{'error': {'message': 'prompt is too long: N tokens > 200000 maximum'}}`.
+    OpenAI raises `openai.BadRequestError` with `code='context_length_exceeded'`.
+    Local OpenAI-compat backends sometimes wrap the same condition in a generic
+    400 with vendor-specific phrasing — we match on common substrings.
+    """
+    msg = str(exc).lower()
+    return (
+        "prompt is too long" in msg
+        or "context_length_exceeded" in msg
+        or "context length" in msg
+        or "maximum context length" in msg
+        or "context window" in msg
+    )
 
 
 def _render_session(session: Session, max_message_chars: int | None = None) -> str:

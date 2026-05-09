@@ -52,6 +52,8 @@ Existing OSS memory layers — Letta (formerly MemGPT) and mem0 — handle stora
 3. Eval harness reports a measurable lift on the 15-task suite (baseline vs. dreamed agent, 5 trials each per task). Target ≥ 5 percentage points.
 4. README polished + 60-second demo recorded + GitHub repo public + MIT license.
 
+> **Note (2026-05-10):** Criterion 3 was not met by v0.0.1-alpha — measured cross-domain lift was +0.0pp aggregate (+40 / −20 / −20 / 12 ceilings per-task). The cross-domain test is itself a flawed measurement of the consolidation pass; v0.0.2 commits to the domain-matched two-pass eval (collect baselines → dream → re-run on identical tasks). Original criterion preserved here for historical record. See [`CHANGELOG.md`](CHANGELOG.md) and [`README.md`](README.md#known-limitations) for the per-task breakdown.
+
 ---
 
 ## 4. Architecture (three stages)
@@ -452,7 +454,7 @@ class DreamCycle(BaseModel):
 
 This is the Stage 1 meta-prompt. The text inside is loaded at runtime, formatted with the session, and sent to the LLM. Create this file with exactly these contents:
 
-**v2 (2026-05-07). v0 → v1 fixed 7 defects (forced decision_points, polarized what_worked/failed, ungated candidates, no completeness/confidence signals, no target-vs-observed split). v1 → v2 fixed 3 more after a real-output review on a substantive 638-message session: (1) the `session_completeness == "interrupted"` rule was too literal — an early `[Request interrupted by user]` followed by ~380 substantive messages was being mis-classified, cascading a `reflection_confidence` cap; (2) the `tool_use_notes` bar of "non-obvious" excluded standard-but-useful patterns another agent instance would benefit from; (3) the `valence` default was implicitly skewing positive (6/7 entries) — competence is `neutral`, not `positive`.**
+**v3 (2026-05-09). v2 → v3 fixed a Haiku-4.5-era schema-strictness gap: a real round-trip on 19 sessions had Haiku drop required `evidence` and `choice_made` sub-fields on `decision_points[]` and `tool_use_notes[]` entries 73% of the time, even after retry-with-feedback. The prose `decision_points` and `tool_use_notes` sections didn't show explicit per-item JSON schemas the way `behaviors_observed[]` and `candidates_for_memory[]` did — that asymmetry was the bug. Added the two missing schemas plus an explicit "required on every entry" reminder. v0 → v1 fixed 7 defects (forced decision_points, polarized what_worked/failed, ungated candidates, no completeness/confidence signals, no target-vs-observed split). v1 → v2 fixed 3 more after a real-output review on a substantive 638-message session: (1) the `session_completeness == "interrupted"` rule was too literal — an early `[Request interrupted by user]` followed by ~380 substantive messages was being mis-classified, cascading a `reflection_confidence` cap; (2) the `tool_use_notes` bar of "non-obvious" excluded standard-but-useful patterns another agent instance would benefit from; (3) the `valence` default was implicitly skewing positive (6/7 entries) — competence is `neutral`, not `positive`.**
 
 ````markdown
 # Reflection prompt (Stage 1)
@@ -538,7 +540,16 @@ Return a single JSON object. No commentary, no markdown fences.
 **`observed_work_classification`** — what the agent *actually did*.
 These usually match. On interrupted or off-track sessions they diverge — that divergence is itself signal for the consolidator.
 
-**`decision_points`** — include ONLY when the agent faced a non-obvious choice with multiple plausible options *visible in the trace*. **If you would have to invent the alternative, do not include the decision point.** Empty array is the expected default; most sessions have none.
+**`decision_points`** — include ONLY when the agent faced a non-obvious choice with multiple plausible options *visible in the trace*. **If you would have to invent the alternative, do not include the decision point.** Empty array is the expected default; most sessions have none. When you do include an entry:
+```json
+{
+  "moment": "<message reference where the choice was made>",
+  "choice_made": "<which option the agent picked>",
+  "alternatives_visible": "<other plausible options visible in the trace, or null>",
+  "evidence": "<reference into the session>"
+}
+```
+**`moment`, `choice_made`, and `evidence` are required on every entry.** `alternatives_visible` may be `null` when the alternative is implicit.
 
 **`behaviors_observed`** — neutral descriptions of what the agent did. Each entry:
 ```json
@@ -554,7 +565,15 @@ Most observations are `neutral`. Use `positive` only when there is clear evidenc
 
 **Valence calibration check.** If you find yourself marking >70% of observations as `positive`, you are likely confusing *"agent did something competent"* with *positive valence* — competence is `neutral`. The neutral default exists so observations don't have to earn their place via valence.
 
-**`tool_use_notes`** — include a note when the tool use exhibits a pattern that **another agent instance would benefit from being told about explicitly**, even if experienced developers consider it standard. The bar is *"would this be useful in a future session prompt"*, not *"is this novel"*. Paraphrase is still not a note: "The tool was used to inspect the directory" describes nothing actionable. Empty array is acceptable when nothing rises to that bar.
+**`tool_use_notes`** — include a note when the tool use exhibits a pattern that **another agent instance would benefit from being told about explicitly**, even if experienced developers consider it standard. The bar is *"would this be useful in a future session prompt"*, not *"is this novel"*. Paraphrase is still not a note: "The tool was used to inspect the directory" describes nothing actionable. Empty array is acceptable when nothing rises to that bar. Each entry:
+```json
+{
+  "tool": "<tool name>",
+  "note": "<the actionable observation>",
+  "evidence": "<reference into the session>"
+}
+```
+**All three fields are required on every entry. Never omit `evidence`.**
 
 **`candidates_for_memory`** — gate strictly. Do NOT propose a candidate if it is any of:
 - `task_specific` AND `kind == "fact"` (transient state, not stable memory)

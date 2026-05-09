@@ -9,8 +9,7 @@
 
 Anthropic's *Dreaming* (May 6, 2026) is a memory-consolidation pass that runs
 between Claude Managed Agent sessions, surfaces recurring patterns and
-mistakes, and updates the agent's long-term memory. Harvey reported a ~6× lift
-in completion rates after using it.
+mistakes, and updates the agent's long-term memory.
 
 That capability is currently locked to Anthropic Managed Agents. **OpenDream is
 the open-source equivalent** for any agent stack and any model — record
@@ -18,9 +17,37 @@ sessions in one tool (Claude Code, Aider) and the consolidated memory works in
 the next (Cursor, Codex, OpenHands, Copilot), since `AGENTS.md` is the
 cross-framework standard.
 
-> On a fixed 15-task FastAPI suite, agents with OpenDream-consolidated memory
-> finished `[EVAL_LIFT_PCT]` percentage points more tasks than baseline
-> (5 trials per task per condition). _Number measured `[EVAL_DATE]`._
+### v0.0.1-alpha eval result (2026-05-09)
+
+OpenDream was measured on a 15-task fixed suite, 5 trials per task per
+condition (150 trials total, run via `claude --print` against
+[`eval/fixtures/library_api/`](eval/fixtures/library_api/)).
+
+| | Baseline | Dreamed | Δ |
+|---|---:|---:|---:|
+| **Aggregate (15 tasks)** | **96%** | **96%** | **+0.0pp** |
+| `13_typed_storage_dataclass` (refactor) | 60% | 100% | **+40.0** |
+| `07_bulk_create_members` (feature) | 80% | 60% | **−20.0** |
+| `09_member_loan_history` (feature) | 100% | 80% | **−20.0** |
+| Other 12 tasks | 100% | 100% | 0 (ceiling) |
+
+**The aggregate +0.0pp is what the suite measured. The signal is in the
+per-task breakdown.** The consolidation pass produced a +40pp lift on a
+refactor task whose required pattern was in the consolidated memory ("write
+data models first" — a workflow entry that transferred), and a measurable
+−20pp regression on two feature tasks where the memory contained off-domain
+guidance that distracted the agent.
+
+**The eval has a design flaw — and we're naming it rather than burying it.**
+Memory was consolidated from sessions of *building OpenDream itself*, then
+injected as `AGENTS.md` while the agent worked on a different codebase
+(a FastAPI library-lending toy). That isn't the test Anthropic's *Dreaming*
+claims to pass — that test is *domain-matched*: consolidate from prior runs
+of the same task suite, then re-run dreamed on the same suite. **v0.0.2
+commits to that two-pass eval** (collect baseline transcripts → dream over
+them → re-run dreamed on identical tasks). The current cross-domain +0.0pp
+is a real datum about cross-project memory pollution, not a verdict on the
+consolidation pass itself.
 
 ## What it does
 
@@ -210,9 +237,32 @@ This is v0. The full spec lives in [`SPEC.md`](SPEC.md). What's done:
 - [x] Dual-backend LLM client (OpenAI-compat + Anthropic native)
 - [x] Eval harness with FastAPI fixture suite (15 tasks)
 - [x] CI: ruff + mypy + pytest on Python 3.11 + 3.12
-- [ ] Eval `[EVAL_LIFT_PCT]` measured on 15-task suite, 5 trials/condition
+- [x] Eval ran on 15-task suite, 5 trials/condition — cross-domain
+      aggregate +0.0pp, real per-task signal (see eval result above)
+- [ ] Domain-matched eval (v0.0.2 — see [Known limitations](#known-limitations))
 - [ ] 60-second demo (asciinema)
-- [ ] v0 ship
+- [x] v0.0.1-alpha shipped
+
+## Known limitations
+
+- **Cross-project memory pollution is measurable.** The v0.0.1-alpha eval
+  showed −20pp regressions on two feature tasks where consolidated memory
+  contained off-domain guidance that distracted the agent. Until v0.5's MCP
+  retrieval lands (semantic, project-scoped), **keep `~/.opendream/db.sqlite`
+  scoped to a single codebase per machine**, or run `opendream init --path
+  <project>/.opendream/db.sqlite` per project so memory pools don't bleed
+  across domains.
+- **The v0.0.1-alpha eval is cross-domain by accident.** Memory came from
+  sessions of building OpenDream itself; the eval ran against a different
+  codebase. This isn't the right test of the consolidation pass; v0.0.2 will
+  run the domain-matched two-pass eval (collect baselines → dream → re-run
+  on identical tasks).
+- **No PyPI package yet.** Install from source via `pip install -e .` inside
+  a clone. PyPI lands once the v0.0.2 domain-matched eval is in.
+- **No dynamic memory retrieval.** v0 only writes static `AGENTS.md`. MCP
+  server lands in v0.5.
+- **Aider tool-use blocks stay inlined as raw markdown** rather than getting
+  parsed into `Message.tool_input`. Structured extraction is a v0.5 improvement.
 
 ## Roadmap
 

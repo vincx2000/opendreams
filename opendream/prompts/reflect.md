@@ -81,7 +81,16 @@ Return a single JSON object. No commentary, no markdown fences.
 **`observed_work_classification`** — what the agent *actually did*.
 These usually match. On interrupted or off-track sessions they diverge — that divergence is itself signal for the consolidator.
 
-**`decision_points`** — include ONLY when the agent faced a non-obvious choice with multiple plausible options *visible in the trace*. **If you would have to invent the alternative, do not include the decision point.** Empty array is the expected default; most sessions have none.
+**`decision_points`** — include ONLY when the agent faced a non-obvious choice with multiple plausible options *visible in the trace*. **If you would have to invent the alternative, do not include the decision point.** Empty array is the expected default; most sessions have none. When you do include an entry:
+```json
+{
+  "moment": "<message reference where the choice was made>",
+  "choice_made": "<which option the agent picked>",
+  "alternatives_visible": "<other plausible options visible in the trace, or null>",
+  "evidence": "<reference into the session>"
+}
+```
+**`moment`, `choice_made`, and `evidence` are required on every entry.** `alternatives_visible` may be `null` when the alternative is implicit.
 
 **`behaviors_observed`** — neutral descriptions of what the agent did. Each entry:
 ```json
@@ -97,7 +106,15 @@ Most observations are `neutral`. Use `positive` only when there is clear evidenc
 
 **Valence calibration check.** If you find yourself marking >70% of observations as `positive`, you are likely confusing *"agent did something competent"* with *positive valence* — competence is `neutral`. The neutral default exists so observations don't have to earn their place via valence.
 
-**`tool_use_notes`** — include a note when the tool use exhibits a pattern that **another agent instance would benefit from being told about explicitly**, even if experienced developers consider it standard. The bar is *"would this be useful in a future session prompt"*, not *"is this novel"*. Paraphrase is still not a note: "The tool was used to inspect the directory" describes nothing actionable. Empty array is acceptable when nothing rises to that bar.
+**`tool_use_notes`** — include a note when the tool use exhibits a pattern that **another agent instance would benefit from being told about explicitly**, even if experienced developers consider it standard. The bar is *"would this be useful in a future session prompt"*, not *"is this novel"*. Paraphrase is still not a note: "The tool was used to inspect the directory" describes nothing actionable. Empty array is acceptable when nothing rises to that bar. Each entry:
+```json
+{
+  "tool": "<tool name>",
+  "note": "<the actionable observation>",
+  "evidence": "<reference into the session>"
+}
+```
+**All three fields are required on every entry. Never omit `evidence`.**
 
 **`candidates_for_memory`** — gate strictly. Do NOT propose a candidate if it is any of:
 - `task_specific` AND `kind == "fact"` (transient state, not stable memory)

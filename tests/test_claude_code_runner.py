@@ -13,14 +13,20 @@ from eval.runner import EvalTask
 
 
 def _make_fake_claude(tmp_path: Path, exit_code: int = 0) -> Path:
-    """Drop a tiny shell script onto disk that records its argv into a file."""
+    """Drop a tiny shell script onto disk that records its argv AND stdin.
+
+    argv lands in `claude_invocations.txt` (one line per call);
+    stdin lands in `claude_stdin.txt` (raw bytes). Tests can assert on either.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "claude"
-    log = tmp_path / "claude_invocations.txt"
+    argv_log = tmp_path / "claude_invocations.txt"
+    stdin_log = tmp_path / "claude_stdin.txt"
     fake.write_text(
         f"""#!/bin/sh
-echo "$@" >> "{log}"
+echo "$@" >> "{argv_log}"
+cat >> "{stdin_log}"
 exit {exit_code}
 """
     )
@@ -42,7 +48,11 @@ def _make_task(tmp_path: Path) -> tuple[EvalTask, Path]:
     return task, workspace
 
 
-def test_runner_invokes_claude_with_prompt_and_add_dir(tmp_path, monkeypatch):
+def test_runner_invokes_claude_with_prompt_via_stdin_and_add_dir(tmp_path, monkeypatch):
+    """Regression: `--add-dir <directories...>` is variadic in the real `claude`
+    CLI, so passing the prompt as a trailing positional argument lets it be
+    silently consumed as another directory. The runner now sends the prompt
+    via stdin to keep argument parsing unambiguous."""
     bin_dir = _make_fake_claude(tmp_path)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     task, workspace = _make_task(tmp_path)
@@ -50,11 +60,19 @@ def test_runner_invokes_claude_with_prompt_and_add_dir(tmp_path, monkeypatch):
     runner = ClaudeCodeRunner()
     runner.run(task, workspace, opendream_md=None)
 
-    log = (tmp_path / "claude_invocations.txt").read_text().strip()
-    # argv should include --print, --add-dir <workspace>, and the prompt
-    assert "--print" in log
-    assert f"--add-dir {workspace}" in log
-    assert "please fix the bug" in log
+    argv = (tmp_path / "claude_invocations.txt").read_text().strip()
+    stdin = (tmp_path / "claude_stdin.txt").read_text()
+
+    # argv should include --print, --dangerously-skip-permissions, and --add-dir <workspace>.
+    # The prompt MUST NOT appear in argv (otherwise --add-dir's variadic parser eats it).
+    assert "--print" in argv
+    assert "--dangerously-skip-permissions" in argv
+    assert f"--add-dir {workspace}" in argv
+    assert "please fix the bug" not in argv, (
+        "prompt leaked into argv — --add-dir is variadic and would consume it"
+    )
+    # Prompt arrives via stdin instead.
+    assert "please fix the bug" in stdin
 
 
 def test_runner_drops_agents_md_in_dreamed_condition(tmp_path, monkeypatch):

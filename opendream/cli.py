@@ -395,6 +395,7 @@ def _reflect_cmd(
         console.print("[dim]nothing to reflect on[/dim]")
         return
 
+    skipped: list[tuple[UUID, str]] = []
     for sid in targets:
         session = store.load_session(sid, path=db_path)
         if session is None:
@@ -429,11 +430,39 @@ def _reflect_cmd(
                 console.print_json(ref.model_dump_json())
             continue
 
-        ref = reflect.reflect_on(session, max_message_chars=max_message_chars)
+        try:
+            ref = reflect.reflect_on(session, max_message_chars=max_message_chars)
+        except ValidationError as exc:
+            # reflect_on already retried once with feedback. If still failing,
+            # skip this session rather than aborting the whole --all-pending run.
+            first_err = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            console.print(
+                f"[yellow]skipped[/yellow] {sid}: schema validation failed after retry — {first_err}"
+            )
+            skipped.append((sid, first_err))
+            continue
+        except reflect.OversizedSessionError as exc:
+            # Session's rendered prompt exceeds the model's context window —
+            # property of the session, not a transient failure. Skip and
+            # continue so the rest of the batch still gets processed.
+            first_err = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            console.print(
+                f"[yellow]skipped[/yellow] {sid}: oversized session — {first_err}"
+            )
+            skipped.append((sid, first_err))
+            continue
         store.save_reflection(ref, path=db_path)
         console.print(f"[green]reflected[/green] {sid} -> reflection {ref.id}")
         if show_json:
             console.print_json(ref.model_dump_json())
+
+    if skipped:
+        console.print(
+            f"\n[yellow]{len(skipped)} session(s) skipped.[/yellow] "
+            "For schema-validation skips, retune the prompt and re-run "
+            "`opendream reflect --session-id <id>`. For oversized sessions, "
+            "lower `--max-message-chars` (try 500 or 250) on the targeted re-run."
+        )
 
 
 @app.command("dream")

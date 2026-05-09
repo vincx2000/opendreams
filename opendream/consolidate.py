@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from opendream.llm import LLMClient
 from opendream.trace import DreamCycle, MemoryEntry, Reflection
 
@@ -52,11 +54,45 @@ def consolidate(
     client: LLMClient | None = None,
     prompt_path: Path | None = None,
 ) -> DreamCycle:
-    """Run a single dream cycle and return the proposed DreamCycle."""
+    """Run a single dream cycle and return the proposed DreamCycle.
+
+    Two single-retry guards, mirroring `reflect.reflect_on`:
+
+    1. Truncation (`json.JSONDecodeError`) — large dream cycles occasionally
+       overflow the 8192-token output cap and cut off mid-stream. Retry once
+       with a 'be concise' nudge.
+    2. Schema mismatch (`pydantic.ValidationError`) — common failure: model
+       mangles a UUID (drops a hyphen, mistypes a group). Retry once with the
+       Pydantic error fed back. UUIDs in `updates[].evidence` reference the
+       reflection IDs, which are listed in the prompt verbatim.
+
+    If a retry also fails the same check, the underlying error propagates.
+    """
     system, user_prompt = render_prompt(reflections, current_memory, prompt_path)
     cli = client or LLMClient(purpose="dream")
-    data = cli.complete_json(system, user_prompt)
-    return dream_cycle_from_json(data, reflections)
+    try:
+        data = cli.complete_json(system, user_prompt)
+    except json.JSONDecodeError:
+        retry_prompt = user_prompt + (
+            "\n\nYour previous response was not valid JSON (likely truncated). "
+            "Return the JSON again. Keep `summary` concise (≤2 sentences) and "
+            "prefer one sentence per update `content` field to fit the response budget."
+        )
+        data = cli.complete_json(system, retry_prompt)
+
+    try:
+        return dream_cycle_from_json(data, reflections)
+    except ValidationError as exc:
+        feedback = (
+            "\n\nYour previous response failed schema validation with these errors:\n"
+            f"{exc}\n\n"
+            "Return the JSON again. Pay particular attention to UUID format — "
+            "every `updates[].evidence[]` must be a 36-character canonical UUID "
+            "(8-4-4-4-12 hex groups separated by hyphens), copied verbatim from "
+            "the reflection IDs listed in the prompt."
+        )
+        retry_data = cli.complete_json(system, user_prompt + feedback)
+        return dream_cycle_from_json(retry_data, reflections)
 
 
 def _render_memory(entries: list[MemoryEntry]) -> str:

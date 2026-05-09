@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from opendream import reflect
 
 
@@ -11,6 +14,20 @@ class StubLLM:
     def complete_json(self, system: str, user: str, *, temperature: float = 0.0) -> dict:
         self.calls.append((system, user))
         return self.payload
+
+
+class SequenceLLM:
+    """Returns successive payloads on each call — simulates retry-with-feedback."""
+
+    def __init__(self, payloads: list[dict]) -> None:
+        self.payloads = list(payloads)
+        self.calls: list[tuple[str, str]] = []
+
+    def complete_json(self, system: str, user: str, *, temperature: float = 0.0) -> dict:
+        self.calls.append((system, user))
+        if not self.payloads:
+            raise AssertionError("SequenceLLM ran out of payloads")
+        return self.payloads.pop(0)
 
 
 REFLECTION_PAYLOAD = {
@@ -108,6 +125,90 @@ def test_render_session_no_cap_preserves_content(sample_session):
     rendered = reflect._render_session(sample_session)
     for m in sample_session.messages:
         assert m.content in rendered
+
+
+def _malformed_payload() -> dict:
+    """Mirrors the real Haiku 4.5 failure mode: list entries missing required sub-fields."""
+    bad = {
+        **REFLECTION_PAYLOAD,
+        "approach": {
+            **REFLECTION_PAYLOAD["approach"],
+            "decision_points": [{"moment": "chose to use Edit"}],  # missing choice_made + evidence
+        },
+        "observations": {
+            **REFLECTION_PAYLOAD["observations"],
+            "tool_use_notes": [{"tool": "Edit", "note": "used directly"}],  # missing evidence
+        },
+    }
+    return bad
+
+
+def test_reflect_on_retries_with_feedback_when_first_response_misses_fields(sample_session):
+    """If the LLM drops required sub-fields, reflect_on retries once with the
+    Pydantic error appended as feedback. Recovery on retry returns a valid Reflection."""
+    stub = SequenceLLM([_malformed_payload(), REFLECTION_PAYLOAD])
+    ref = reflect.reflect_on(sample_session, client=stub)
+
+    assert ref.session_id == sample_session.id
+    assert len(stub.calls) == 2, "expected exactly one retry"
+    # Second call's user prompt must contain the validation feedback.
+    _, retry_user = stub.calls[1]
+    assert "failed schema validation" in retry_user
+    assert "required" in retry_user.lower()
+
+
+def test_reflect_on_propagates_validation_error_when_retry_also_fails(sample_session):
+    """If the retry also returns a malformed payload, ValidationError propagates
+    so the --all-pending caller can skip-and-continue."""
+    stub = SequenceLLM([_malformed_payload(), _malformed_payload()])
+    with pytest.raises(ValidationError):
+        reflect.reflect_on(sample_session, client=stub)
+    assert len(stub.calls) == 2, "must not retry more than once"
+
+
+class _RaisingLLM:
+    """Raises a chosen exception on `complete_json`."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+        self.calls: list[tuple[str, str]] = []
+
+    def complete_json(self, system: str, user: str, *, temperature: float = 0.0) -> dict:
+        self.calls.append((system, user))
+        raise self.exc
+
+
+def test_reflect_on_maps_anthropic_oversized_prompt_to_oversized_session_error(sample_session):
+    """Real failure mode: Anthropic 400 with `prompt is too long: N tokens > 200000 maximum`.
+    `reflect.reflect_on` must convert that into `OversizedSessionError` so callers
+    can distinguish it from transient errors."""
+    raising = _RaisingLLM(
+        RuntimeError(
+            "Error code: 400 - {'error': {'message': "
+            "'prompt is too long: 211977 tokens > 200000 maximum'}}"
+        )
+    )
+    with pytest.raises(reflect.OversizedSessionError) as excinfo:
+        reflect.reflect_on(sample_session, client=raising)
+    assert "exceeds model context" in str(excinfo.value)
+    assert len(raising.calls) == 1, "must not retry on oversized prompt"
+
+
+def test_reflect_on_maps_openai_context_length_to_oversized_session_error(sample_session):
+    """OpenAI surfaces context overflow as `context_length_exceeded`. Same handling."""
+    raising = _RaisingLLM(
+        RuntimeError("400 BadRequestError: context_length_exceeded — too many tokens")
+    )
+    with pytest.raises(reflect.OversizedSessionError):
+        reflect.reflect_on(sample_session, client=raising)
+
+
+def test_reflect_on_propagates_unrelated_errors_unchanged(sample_session):
+    """Non-context-length errors (auth, rate limit, network) must propagate as-is
+    so the user sees the real problem rather than a misleading skip."""
+    raising = _RaisingLLM(RuntimeError("401 Unauthorized: bad API key"))
+    with pytest.raises(RuntimeError, match="401"):
+        reflect.reflect_on(sample_session, client=raising)
 
 
 def test_render_prompt_forwards_max_message_chars(sample_session):

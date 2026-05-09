@@ -162,6 +162,110 @@ def test_end_to_end_pipeline(monkeypatch, tmp_path):
     assert "agent handles trivial typo fixes" in text
 
 
+def test_reflect_all_pending_skips_validation_failures_and_continues(
+    monkeypatch, tmp_path
+):
+    """Regression: when the LLM returns a malformed Reflection for one session
+    (and the single retry also fails), --all-pending must log + skip that
+    session, not abort the whole batch. Every other session should still get
+    its reflection saved."""
+    db_path = tmp_path / "db.sqlite"
+    history = tmp_path / ".aider.chat.history.md"
+    # Two distinct sessions in one aider history file.
+    history.write_text(
+        AIDER_HISTORY
+        + "\n\n# aider chat started at 2026-05-01 10:00:00\n\n#### second task\n\nDone.\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    r = runner.invoke(app, ["init", "--path", str(db_path)])
+    assert r.exit_code == 0
+    r = runner.invoke(
+        app, ["ingest", "aider", str(history), "--path", str(db_path)]
+    )
+    assert r.exit_code == 0
+    sessions = store.list_sessions(path=db_path)
+    assert len(sessions) == 2
+
+    # Mock LLM: first session's two calls (initial + retry) both return a
+    # malformed payload → that session is skipped. Second session's call
+    # returns a valid payload → that one succeeds.
+    malformed = {
+        **REFLECT_PAYLOAD,
+        "observations": {
+            **REFLECT_PAYLOAD["observations"],
+            "tool_use_notes": [{"tool": "Edit", "note": "used directly"}],  # missing evidence
+        },
+    }
+    payloads = iter([malformed, malformed, REFLECT_PAYLOAD])
+
+    class _SeqLLM:
+        def complete_json(self, system, user, *, temperature=0.0):
+            return next(payloads)
+
+    monkeypatch.setattr(reflect, "LLMClient", lambda *a, **kw: _SeqLLM())
+
+    r = runner.invoke(
+        app, ["reflect", "--all-pending", "--path", str(db_path)]
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "skipped" in r.stdout
+    assert "schema validation" in r.stdout
+    # One reflection landed (for the second session), the first was skipped.
+    refs = store.list_reflections(path=db_path)
+    assert len(refs) == 1
+
+
+def test_reflect_all_pending_skips_oversized_sessions_and_continues(
+    monkeypatch, tmp_path
+):
+    """Regression: when a session's rendered prompt exceeds the model's context
+    window, --all-pending must log + skip that session, not abort the batch.
+    Mirrors the real Anthropic 400 'prompt is too long' failure mode."""
+    db_path = tmp_path / "db.sqlite"
+    history = tmp_path / ".aider.chat.history.md"
+    history.write_text(
+        AIDER_HISTORY
+        + "\n\n# aider chat started at 2026-05-01 10:00:00\n\n#### second task\n\nDone.\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    runner.invoke(app, ["init", "--path", str(db_path)])
+    runner.invoke(app, ["ingest", "aider", str(history), "--path", str(db_path)])
+    sessions = store.list_sessions(path=db_path)
+    assert len(sessions) == 2
+
+    # First session: LLM raises the real Anthropic context-overflow error.
+    # Second session: LLM returns a valid payload.
+    call_count = {"n": 0}
+
+    class _OversizedFirstLLM:
+        def complete_json(self, system, user, *, temperature=0.0):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError(
+                    "Error code: 400 - {'error': {'message': "
+                    "'prompt is too long: 211977 tokens > 200000 maximum'}}"
+                )
+            return REFLECT_PAYLOAD
+
+    monkeypatch.setattr(reflect, "LLMClient", lambda *a, **kw: _OversizedFirstLLM())
+
+    r = runner.invoke(
+        app, ["reflect", "--all-pending", "--path", str(db_path)]
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "skipped" in r.stdout
+    assert "oversized" in r.stdout
+    # Exactly one reflection saved (second session); first was skipped without
+    # consuming a retry call.
+    refs = store.list_reflections(path=db_path)
+    assert len(refs) == 1
+    assert call_count["n"] == 2, "expected 1 oversized call + 1 successful call (no retry on oversized)"
+
+
 def test_ingest_aider_from_stdin(tmp_path):
     db_path = tmp_path / "db.sqlite"
     store.init_db(db_path)

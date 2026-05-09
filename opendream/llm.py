@@ -47,6 +47,16 @@ DEFAULTS: dict[str, dict[str, str]] = {
     },
 }
 
+# Output-token budget per purpose. Reflect produces a single-session JSON of
+# bounded shape (~2K tokens typical, 4K worst case). Dream produces N memory
+# updates plus M non_updates — for a 18-reflection cycle the JSON regularly
+# crosses 5K tokens of output. Anthropic's API requires `max_tokens` (unlike
+# OpenAI which defaults to the model's native cap), so we set it explicitly.
+MAX_OUTPUT_TOKENS: dict[str, int] = {
+    "reflect": 4096,
+    "dream": 8192,
+}
+
 
 @dataclass
 class LLMConfig:
@@ -110,15 +120,16 @@ class LLMClient:
         self.purpose: Purpose = purpose
         self.config = config or LLMConfig.from_env()
         self.model = self.config.model_for(purpose)
-        self._impl = _build_backend(self.config, self.model)
+        self.max_output_tokens = MAX_OUTPUT_TOKENS[purpose]
+        self._impl = _build_backend(self.config, self.model, self.max_output_tokens)
 
     def complete_json(self, system: str, user: str, *, temperature: float = 0.0) -> dict:
         return self._impl.complete_json(system, user, temperature=temperature)
 
 
-def _build_backend(config: LLMConfig, model: str):
+def _build_backend(config: LLMConfig, model: str, max_output_tokens: int):
     if config.provider == "anthropic":
-        return _AnthropicBackend(config, model)
+        return _AnthropicBackend(config, model, max_output_tokens)
     return _OpenAIBackend(config, model)
 
 
@@ -167,11 +178,12 @@ class _OpenAIBackend:
 
 
 class _AnthropicBackend:
-    def __init__(self, config: LLMConfig, model: str) -> None:
+    def __init__(self, config: LLMConfig, model: str, max_output_tokens: int) -> None:
         from anthropic import Anthropic
 
         self.config = config
         self.model = model
+        self.max_output_tokens = max_output_tokens
         self.client = Anthropic(api_key=config.api_key)
 
     def complete_json(self, system: str, user: str, *, temperature: float) -> dict:
@@ -181,7 +193,7 @@ class _AnthropicBackend:
 
         resp = self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=self.max_output_tokens,
             system=system + "\n\nReturn ONLY a JSON object. No prose, no markdown fences.",
             messages=[{"role": "user", "content": user}],
             temperature=temperature,

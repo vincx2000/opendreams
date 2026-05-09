@@ -39,8 +39,14 @@ class ClaudeCodeRunner:
 
     claude_binary: str = "claude"
     # `--print` runs non-interactively; `--add-dir` constrains scope.
-    # Verify exact flag names against `claude --help` once the CLI is installed.
-    extra_args: tuple[str, ...] = ("--print",)
+    # `--dangerously-skip-permissions` is required so the agent can actually
+    # edit files in the workspace without an interactive permission prompt
+    # (which would block forever in a `--print` subprocess and cause the
+    # agent to time out without producing changes).
+    extra_args: tuple[str, ...] = (
+        "--print",
+        "--dangerously-skip-permissions",
+    )
 
     def run(
         self,
@@ -53,16 +59,20 @@ class ClaudeCodeRunner:
         if opendream_md:
             shutil.copy(opendream_md, workspace / "AGENTS.md")
 
+        # Pass the prompt via stdin rather than as a positional argument:
+        # `--add-dir <directories...>` is variadic and would otherwise greedily
+        # consume the prompt as an additional directory path, leaving the agent
+        # waiting for input that never arrives.
         cmd = [
             self.claude_binary,
             *self.extra_args,
             "--add-dir",
             str(workspace),
-            task.prompt,
         ]
         completed = subprocess.run(
             cmd,
             cwd=workspace,
+            input=task.prompt.encode("utf-8"),
             capture_output=True,
             timeout=task.timeout_seconds,
         )

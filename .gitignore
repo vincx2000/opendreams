@@ -14,7 +14,15 @@ venv/
 *.sqlite-journal
 .DS_Store
 
-# OpenDream-specific runtime artefacts that should never be committed
-AGENTS.md            # the pipeline's OUTPUT in any project that runs OpenDream
-.opendream-eval/     # per-trial workspaces produced by `opendream eval run`
-/tmp/od_dryrun/      # local prompt-tuning dry-run scratchpad (also outside repo)
+# OpenDream-specific runtime artefacts that should never be committed.
+# (Inline comments after a pattern do NOT work in .gitignore — git treats
+#  the trailing text as part of the pattern, breaking the rule silently.)
+
+# The pipeline's OUTPUT in any project that runs OpenDream:
+AGENTS.md
+# Per-trial workspaces produced by `opendream eval run`:
+.opendream-eval/
+# Local prompt-tuning dry-run scratchpad:
+/tmp/od_dryrun/
+# Eval run logs:
+eval_logs/
