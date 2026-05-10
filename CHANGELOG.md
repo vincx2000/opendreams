@@ -8,6 +8,73 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Nothing yet — see [Roadmap](README.md#roadmap) for what's planned.
 
+## [0.0.2] — 2026-05-10
+
+Domain-matched eval release. The cross-domain design flaw v0.0.1-alpha
+surfaced is fixed; the consolidator's effect on agent behavior is now
+isolated and measured on its own terms.
+
+### Added
+
+- **`--two-pass` mode for `opendream eval run`** (and the underlying
+  `eval.runner.run_two_pass_eval`). Pass-1 collects baseline transcripts on
+  the eval suite, OpenDream consolidates *those* into an isolated
+  `<workdir>/AGENTS.md`, pass-2 re-runs the same suite dreamed against
+  that AGENTS.md. Eval-state (`<workdir>/store.sqlite`,
+  `<workdir>/transcripts/`) is wiped at the start of every run; never
+  touches the user's `~/.opendream/db.sqlite`.
+- **Stream-json transcript capture.** `ClaudeCodeRunner` accepts
+  `capture_to: Path` and runs with `claude --print --output-format
+  stream-json --no-session-persistence`, redirecting stdout to
+  `<capture_to>/transcript.jsonl`. The streamed NDJSON shape matches Claude
+  Code's project-dir jsonl, so the existing `claude_code` adapter ingests
+  it directly (one-line `session_id` snake_case fallback added). Empty or
+  malformed captures raise `TranscriptCaptureError` to halt cleanly.
+- **Pre-flight `probe_claude_capture()`** spawns `claude --print
+  --output-format stream-json` in a temp directory and validates the
+  output before the orchestrator commits to running 150 trials. Cheap
+  insurance against silent drift in Claude Code's CLI surface.
+- **`_run_one_condition` helper** extracted from `run_eval`. Public
+  `run_eval` signature unchanged; the helper is what the two-pass
+  orchestrator calls twice (with consolidate sandwiched between).
+- **18 new tests** (174 → 192). Capture-mode runner behavior, two-pass
+  orchestrator end-to-end (offline, stub LLM clients), eval-store wipe
+  guarantee across consecutive runs, runners-without-capture rejection.
+
+### Eval result
+
+- **+4.0pp aggregate lift on the 15-task suite** (baseline 92% →
+  dreamed 96%, 5 trials per task per condition, 150 trials total). Three
+  tasks showed +20pp lift each: `07_bulk_create_members`,
+  `12_generic_repository_base`, `14_test_translate_function`. **No
+  regressions anywhere.**
+- **Both v0.0.1-alpha regressions are gone.** Task 7 went from −20pp
+  (cross-domain) to +20pp (domain-matched). Task 9 went from −20pp to
+  0pp. The cross-project memory-pollution thesis from v0.0.1's CHANGELOG
+  is confirmed and fixed.
+- **SPEC §3's ≥5pp target was missed by 1pp.** Honest reading: the
+  consolidator is producing real per-task signal (+20pp on 3 of 15
+  tasks, 0pp regressions on the rest), but **12 of 15 tasks are
+  ceiling-effected** at 100% baseline — the agent already crushes them
+  without memory help, so the aggregate dilutes. v0.0.3 will replace
+  those tasks with harder discriminators (multi-step refactors, ambiguous
+  bug fixes, cross-module feature additions) so the SPEC §3 bar becomes
+  reachable. Consolidator quality is not the bottleneck; suite design is.
+- **Total cost of v0.0.2 measurement: ~$2.00 of API spend** (75 reflect
+  calls + 1 dream call across smoke + targeted + full eval) plus ~3 hours
+  of subscription quota for the 150 `claude --print` invocations.
+
+### Known limitations
+
+- **The eval suite is ceiling-effected** at 12 of 15 tasks. v0.0.3 will
+  replace those with harder discriminators.
+- **No PyPI package yet.** Install from source via `pip install -e .`.
+  PyPI lands once v0.0.3 ships the discriminating eval.
+- **No dynamic memory retrieval.** v0 only writes static `AGENTS.md`. MCP
+  server lands in v0.5.
+- **Aider tool-use blocks stay inlined as raw markdown.** Structured
+  extraction is a v0.5 improvement.
+
 ## [0.0.1] — 2026-05-08
 
 Initial public release.
@@ -84,5 +151,6 @@ Initial public release.
 No CVEs. PII fixtures audited per `tests/fixtures/README.md`. Vulnerability
 reporting path documented in [`SECURITY.md`](SECURITY.md).
 
-[Unreleased]: https://github.com/vincx2000/opendreams/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/vincx2000/opendreams/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/vincx2000/opendreams/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/vincx2000/opendreams/releases/tag/v0.0.1

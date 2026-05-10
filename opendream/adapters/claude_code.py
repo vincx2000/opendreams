@@ -57,7 +57,11 @@ class ClaudeCodeAdapter(Adapter):
 
         cwd = _first_value(events, "cwd")
         git_branch = _first_value(events, "gitBranch")
-        session_id = _first_value(events, "sessionId")
+        # Claude Code's project-dir jsonl uses `sessionId` (camelCase). The
+        # `--output-format stream-json` flag (used by the v0.0.2 two-pass eval
+        # for transcript capture) emits the same field as `session_id`
+        # (snake_case). Accept either so both ingestion paths work.
+        session_id = _first_value(events, "sessionId") or _first_value(events, "session_id")
         started_at = _parse_ts(events[0].get("timestamp")) or datetime.fromtimestamp(
             path.stat().st_mtime
         )

@@ -711,10 +711,34 @@ def eval_run(
         "--workdir",
         help="Where to materialize per-trial workspaces (default: ./.opendream-eval).",
     ),
+    two_pass: bool = typer.Option(
+        False,
+        "--two-pass",
+        help=(
+            "Domain-matched eval: pass-1 collects baseline transcripts, "
+            "OpenDream consolidates them, pass-2 runs dreamed on the same suite. "
+            "Requires --runner claude_code (others lack transcript capture)."
+        ),
+    ),
+    eval_store: Optional[Path] = typer.Option(
+        None,
+        "--eval-store",
+        help=(
+            "Path to the isolated eval-state SQLite (two-pass only). Wiped "
+            "and recreated on every run. Default: <workdir>/store.sqlite. "
+            "Never use ~/.opendream/db.sqlite — eval state must stay separate."
+        ),
+    ),
 ) -> None:
     """Run the eval suite and print the lift report."""
     from eval.agents import AiderRunner, ClaudeCodeRunner
-    from eval.runner import AgentRunner, load_tasks, run_eval
+    from eval.runner import (
+        AgentRunner,
+        load_tasks,
+        probe_claude_capture,
+        run_eval,
+        run_two_pass_eval,
+    )
 
     if baseline_only and dreamed_only:
         raise typer.BadParameter("--baseline and --dreamed are mutually exclusive")
@@ -723,6 +747,27 @@ def eval_run(
         # the Rich-formatted error panel hides the message body from CliRunner's
         # captured stderr, breaking tests that assert on the message text.
         typer.echo("error: --dreamed requires --agents-md", err=True)
+        raise typer.Exit(2)
+    if two_pass and (baseline_only or dreamed_only):
+        typer.echo(
+            "error: --two-pass runs both conditions internally; "
+            "do not combine with --baseline or --dreamed",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if two_pass and agents_md is not None:
+        typer.echo(
+            "error: --two-pass builds its own AGENTS.md from pass-1 captures; "
+            "do not pass --agents-md (it would be ignored)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if two_pass and runner_name != "claude_code":
+        typer.echo(
+            f"error: --two-pass requires --runner claude_code (got {runner_name!r}); "
+            "only ClaudeCodeRunner supports transcript capture in v0.0.2",
+            err=True,
+        )
         raise typer.Exit(2)
 
     runner: AgentRunner
@@ -746,22 +791,47 @@ def eval_run(
         console.print("[yellow]no tasks match[/yellow]")
         return
 
-    console.print(
-        f"[bold]Running[/bold] {len(tasks)} task(s) × "
-        f"{1 if (baseline_only or dreamed_only) else 2} condition(s) × {trials} trial(s) "
-        f"via [cyan]{runner_name}[/cyan]"
-    )
+    if two_pass:
+        console.print(
+            f"[bold]Running TWO-PASS[/bold] {len(tasks)} task(s) × "
+            f"{trials} trial(s) per condition via [cyan]{runner_name}[/cyan]\n"
+            f"  pass 1: collect baseline transcripts\n"
+            f"  consolidate: reflect → dream → AGENTS.md\n"
+            f"  pass 2: run dreamed against the consolidated AGENTS.md"
+        )
+        # Pre-flight probe — fail fast if `claude --output-format stream-json`
+        # is broken or the binary is missing.
+        try:
+            probe_claude_capture()
+        except RuntimeError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
 
-    # The harness always runs both conditions; we filter the report afterwards
-    # to match --baseline/--dreamed.
-    report = run_eval(
-        tasks,
-        runner,
-        fixture_dir=fixture_dir,
-        trials=trials,
-        opendream_md=agents_md,
-        workdir=workdir,
-    )
+        report = run_two_pass_eval(
+            tasks,
+            runner,
+            fixture_dir=fixture_dir,
+            trials=trials,
+            workdir=workdir,
+            eval_store=eval_store,
+        )
+    else:
+        console.print(
+            f"[bold]Running[/bold] {len(tasks)} task(s) × "
+            f"{1 if (baseline_only or dreamed_only) else 2} condition(s) × {trials} trial(s) "
+            f"via [cyan]{runner_name}[/cyan]"
+        )
+
+        # The harness always runs both conditions; we filter the report afterwards
+        # to match --baseline/--dreamed.
+        report = run_eval(
+            tasks,
+            runner,
+            fixture_dir=fixture_dir,
+            trials=trials,
+            opendream_md=agents_md,
+            workdir=workdir,
+        )
 
     # Filter trials per --baseline/--dreamed
     if baseline_only:

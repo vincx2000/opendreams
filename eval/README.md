@@ -86,3 +86,85 @@ print(f"lift    : {report.lift_pp():+.1f}pp")
 
 A CLI wrapper (`opendream eval run`) is wired alongside the rest of the
 v0 commands once the runner is exercised against a real `claude` CLI.
+
+## Two-pass mode (v0.0.2)
+
+The default `run_eval` above runs **cross-domain** by design — you bring an
+externally-built `AGENTS.md` and the harness measures its effect on the
+library_api suite. v0.0.1-alpha shipped that mode and got +0.0pp aggregate
+lift (see [`CHANGELOG.md`](../CHANGELOG.md) `[0.0.1]` for the per-task
+breakdown). The cross-domain test isn't unfair *per se* but it isn't the
+test Anthropic's *Dreaming* claims to pass either: that test is
+**domain-matched** — consolidate from prior runs of the *same* task suite,
+then re-run dreamed on the *same* suite.
+
+`run_two_pass_eval` (and the matching `--two-pass` CLI flag) wires that
+test:
+
+```
+pass 1 (collect)        →  consolidate            →  pass 2 (dreamed)
+─────────────────          ──────────────             ─────────────────
+N tasks × T trials,        ingest captured            same N × T trials
+baseline (no AGENTS.md).   transcripts into an        with the new
+Each trial writes a        isolated eval store at     AGENTS.md injected.
+stream-json transcript     <workdir>/store.sqlite,
+to <workdir>/transcripts/  reflect on each, dream
+<task>/trial-<n>/.         once, export AGENTS.md
+                           to <workdir>/AGENTS.md.
+```
+
+Both passes use the same workdir (default `.opendream-eval/`); `store.sqlite`
+and `transcripts/` are wiped at the start of each `--two-pass` run so stale
+state never leaks between runs.
+
+### Capture mechanism
+
+`ClaudeCodeRunner` accepts `capture_to: Path` and, when set, runs:
+
+```
+claude --print --dangerously-skip-permissions \
+       --output-format stream-json --verbose --no-session-persistence \
+       --add-dir <workspace>
+```
+
+…with stdout redirected to `<capture_to>/transcript.jsonl`. The streaming
+NDJSON shape matches Claude Code's project-dir jsonl (same `type: user |
+assistant` events, same `message.content` block format), so the existing
+`claude_code` adapter ingests it directly.
+
+`--no-session-persistence` keeps `~/.claude/projects/` clean — the eval
+owns its own transcript via the captured file. After each trial,
+`_validate_transcript` asserts the file is non-empty and contains at least
+one user/assistant event; failure raises `TranscriptCaptureError` so the
+orchestrator halts cleanly rather than feeding an empty transcript to the
+consolidator.
+
+### Running
+
+```bash
+opendream eval run --two-pass --runner claude_code --trials 5
+# → wipes .opendream-eval/, runs pass-1, consolidates, runs pass-2,
+#   prints baseline / dreamed / lift table
+```
+
+Smoke a single task before committing to 150 trials:
+
+```bash
+opendream eval run --two-pass --only 13_typed_storage_dataclass --trials 2
+```
+
+### Hard rules
+
+- Two-pass mode requires `--runner claude_code` — only `ClaudeCodeRunner`
+  has stream-json capture wired in v0.0.2. Aider support is a v0.0.3+ item.
+- Don't combine `--two-pass` with `--baseline`, `--dreamed`, or
+  `--agents-md` — the orchestrator runs both conditions and builds its own
+  AGENTS.md. Combining flags would make the result ambiguous; the CLI
+  rejects these combinations.
+- The eval store at `<workdir>/store.sqlite` is **isolated** from your
+  user pipeline's store at `~/.opendream/db.sqlite`. Never point
+  `--eval-store` at the latter — eval state must stay separate from the
+  long-lived sessions you've actually consolidated.
+- Pass-1 trials run sequentially. Concurrent trial scheduling is a
+  v0.0.3+ problem (race conditions in transcript capture would silently
+  produce corrupted reflections).

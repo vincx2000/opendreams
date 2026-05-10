@@ -52,7 +52,7 @@ Existing OSS memory layers — Letta (formerly MemGPT) and mem0 — handle stora
 3. Eval harness reports a measurable lift on the 15-task suite (baseline vs. dreamed agent, 5 trials each per task). Target ≥ 5 percentage points.
 4. README polished + 60-second demo recorded + GitHub repo public + MIT license.
 
-> **Note (2026-05-10):** Criterion 3 was not met by v0.0.1-alpha — measured cross-domain lift was +0.0pp aggregate (+40 / −20 / −20 / 12 ceilings per-task). The cross-domain test is itself a flawed measurement of the consolidation pass; v0.0.2 commits to the domain-matched two-pass eval (collect baselines → dream → re-run on identical tasks). Original criterion preserved here for historical record. See [`CHANGELOG.md`](CHANGELOG.md) and [`README.md`](README.md#known-limitations) for the per-task breakdown.
+> **Note (2026-05-10):** Criterion 3 was not met by v0.0.1-alpha or v0.0.2 — but the gap shrank and the failure mode changed. v0.0.1-alpha's cross-domain eval measured +0.0pp aggregate (+40 / −20 / −20 / 12 ceilings per-task) — the cross-domain test was itself flawed. v0.0.2 introduced the domain-matched two-pass eval (collect baselines → dream → re-run on identical tasks) and measured **+4.0pp aggregate, +20pp on each of 3 tasks, no regressions** — missed the 5pp bar by 1pp because **12 of 15 tasks are ceiling-effected** at 100% baseline (suite-design issue, not consolidator issue). v0.0.3 will replace the ceiling-effected tasks with harder discriminators so the 5pp bar becomes reachable. Original criterion preserved here for historical record. See [`CHANGELOG.md`](CHANGELOG.md) `[0.0.2]` and [`README.md`](README.md#v002-eval-result-2026-05-10--domain-matched-two-pass) for per-task breakdowns.
 
 ---
 
