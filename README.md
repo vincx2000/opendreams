@@ -7,15 +7,17 @@
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
 [![Status](https://img.shields.io/badge/status-v0--alpha-orange.svg)](#roadmap)
 
-Anthropic's *Dreaming* (May 6, 2026) is a memory-consolidation pass that runs
-between Claude Managed Agent sessions, surfaces recurring patterns and
-mistakes, and updates the agent's long-term memory.
+Anthropic's *Dreaming* (announced May 6, 2026; now in research preview for
+Claude Managed Agents) is a memory-consolidation pass that runs between
+agent sessions, surfaces recurring patterns and mistakes, and updates the
+agent's long-term memory.
 
-That capability is currently locked to Anthropic Managed Agents. **OpenDream is
-the open-source equivalent** for any agent stack and any model — record
-sessions in one tool (Claude Code, Aider) and the consolidated memory works in
-the next (Cursor, Codex, OpenHands, Copilot), since `AGENTS.md` is the
-cross-framework standard.
+OpenDream brings that pass to any agent stack and any model: record sessions
+in one tool (Claude Code, Aider) and the consolidated memory is read
+natively by the next (Cursor, Codex, OpenHands, Copilot) via `AGENTS.md`.
+The OSS memory-consolidation space crystallized rapidly in May 2026 — see
+[How does this compare?](#how-does-this-compare) for the landscape and
+where OpenDream actually fits.
 
 ### v0.0.2 eval result (2026-05-10) — domain-matched two-pass
 
@@ -118,19 +120,53 @@ Claude Code users: `ln -s AGENTS.md CLAUDE.md` and you're done.
 
 ## How does this compare?
 
-|  | Storage | Retrieval | **Consolidation pass** | License |
-|---|:-:|:-:|:-:|---|
-| Anthropic Managed Agents *Dreaming* | ✓ | ✓ | ✓ | closed, paid |
-| Letta (formerly MemGPT) | ✓ | ✓ | — | OSS |
-| mem0 | ✓ | ✓ | — | OSS |
-| **OpenDream** | ✓ | (v0.5) | **✓** | MIT |
+The OSS memory-consolidation space went from "empty" to "crowded" in early
+May 2026. Honest read of where OpenDream sits:
 
-The empty slot is the consolidation pass — the offline step that reads many
-sessions, finds patterns, and rewrites memory so it stays high-signal as it
-grows. OpenDream is exactly that, agent-agnostic and BYO LLM. Storage and
-direct retrieval are intentionally minimal in v0; pair OpenDream with Letta
-or mem0 if you need rich query semantics — they're complementary, not
-competitors.
+|  | Cross-framework | Consolidation pass | BYO LLM | Published eval | License |
+|---|:-:|:-:|:-:|:-:|---|
+| Anthropic *Dreaming* (Managed Agents) | Claude only | ✓ | Anthropic only | Harvey 6× completion | closed, paid |
+| Claude Code Auto Dream / [dream-skill](https://github.com/grandamenium/dream-skill) | Claude Code only | ✓ | mostly Anthropic | — | various OSS |
+| [OpenClawDreams](https://github.com/RogueCtrl/OpenClawDreams) | OpenClaw only | ✓ | ✓ | — | OSS |
+| [mem0](https://github.com/mem0ai/mem0) | library-level | single-pass extract | ✓ | LoCoMo benchmarks | Apache 2.0 |
+| [Letta](https://github.com/letta-ai/letta) | library-level | memory blocks | ✓ | filesystem benchmark | Apache 2.0 |
+| [memsearch](https://github.com/zilliztech/memsearch) | ✓ | retrieval-focused | ✓ | — | OSS |
+| **OpenDream** | **✓ (record-anywhere → AGENTS.md)** | **✓ (offline rewrite, evidence-tracked)** | **✓** | **+4.0pp two-pass** | **MIT** |
+
+### Where OpenDream is sharper
+
+- **Truly cross-framework.** Most consolidators are tied to a specific stack
+  (Claude Code, OpenClaw) or are libraries you embed (mem0, Letta).
+  OpenDream sits between adapters and `AGENTS.md` — record once, output is
+  consumed by the entire `AGENTS.md`-reading ecosystem (Cursor, Codex,
+  OpenAI agents, GitHub Copilot agent mode, 60K+ repos).
+- **Eval rigor.** v0.0.1-alpha shipped a cross-domain eval that surfaced a
+  −20pp regression on two tasks ("off-domain memory distracts the agent");
+  v0.0.2 fixed it with a domain-matched two-pass methodology and showed
+  +4.0pp aggregate, +20pp on three discriminating tasks, **zero
+  regressions**. Most adjacent projects ship without published lift numbers.
+- **No SaaS, no telemetry, no provider lock.** Sessions never leave your
+  machine unless you point at a hosted LLM. Dual-backend client supports
+  OpenAI-compatible (default; covers OpenAI, Ollama, vLLM, Together, Groq,
+  Fireworks) and Anthropic native.
+
+### Where OpenDream is currently weaker
+
+- **No dynamic retrieval yet.** v0 writes static `AGENTS.md`; semantic
+  retrieval lands in v0.5 (MCP server). For rich query semantics today,
+  pair with mem0 or Letta — they're complementary.
+- **Smaller adapter coverage.** Three first-party adapters (Claude Code,
+  Aider, generic JSONL); OpenClaw and Letta have richer first-party
+  ecosystems.
+- **Smaller community.** Younger project; user base is much smaller than
+  mem0's (40K+ stars) or Letta's.
+
+### Picking the right tool
+
+- Need rich graph-based retrieval today → **mem0**.
+- Need stateful long-running agents → **Letta**.
+- Need a turnkey Claude-Code-only dream cycle → **dream-skill** or **Auto Dream**.
+- Need cross-framework portability with a published eval methodology → **OpenDream**.
 
 ## Memory injection: AGENTS.md
 
@@ -270,18 +306,34 @@ This is v0. The full spec lives in [`SPEC.md`](SPEC.md). What's done:
   server lands in v0.5.
 - **Aider tool-use blocks stay inlined as raw markdown** rather than getting
   parsed into `Message.tool_input`. Structured extraction is a v0.5 improvement.
+- **The OSS memory-consolidation space is now crowded.** OpenDream is one of
+  several active projects in this category as of May 2026 (see
+  [How does this compare?](#how-does-this-compare)). The differentiation is
+  cross-framework portability, eval rigor, and BYO-LLM openness — not
+  uniqueness of the consolidation pass itself. If those three properties
+  aren't load-bearing for your use case, an adjacent project may fit better.
 
 ## Roadmap
 
-- **v0.5** — MCP server for dynamic memory retrieval (replaces the static
-  `AGENTS.md` flow when you need it); structured tool-call extraction
-  (currently inlined as `<tool_use name="X">…</tool_use>` markers).
-- **v1.0** — Multi-agent shared dreams; federated cross-organization
-  dreaming.
+- **v0.0.3** — Discriminating eval suite (replace the 12 ceiling-effected
+  tasks with harder discriminators so the aggregate lift number is
+  unambiguous). PyPI release.
+- **v0.5** — MCP server for dynamic memory retrieval (replaces static
+  `AGENTS.md` injection for users with large memory pools); structured
+  tool-call extraction (currently inlined as `<tool_use name="X">…</tool_use>`
+  markers).
+- **v1.0** — Stable cross-framework consolidator: dynamic retrieval shipped,
+  head-to-head benchmarks against the field (mem0, Letta, dream-skill),
+  schema migration tooling, stable Adapter API contract for third-party
+  adapters. v1 is "the static + dynamic memory product is fully delivered
+  and credible against the field," not a feature stretch.
+- **v2.0** — Multi-agent shared dreams; federated cross-organization
+  dreaming. (Originally v1.0 in `SPEC.md`; deferred as the OSS landscape
+  matured around the single-agent case in May 2026.)
 
 No promises, no dates. The
-[issues](https://github.com/vincx2000/opendreams/issues) labelled `v0.5` and
-`v1` are the planning surface.
+[issues](https://github.com/vincx2000/opendreams/issues) labelled `v0.5`,
+`v1`, and `v2` are the planning surface.
 
 ## Contributing
 
